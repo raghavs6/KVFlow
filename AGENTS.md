@@ -122,9 +122,6 @@ See section 5 for *how* to explain. This section is about *when*.
 ## 11. Where things live
 
 - `PROJECT.md` — the brief: problem, architecture, data model, milestones, open questions.
-- `DECISIONS.md` — settled calls and their reasons. Read it before proposing something different; append to it when a new one is settled.
-- `~/.claude/plans/okay-read-through-the-ticklish-lovelace.md` — the M1 step-by-step plan and where we currently are in it.
-## Engineering Learning Workflow
 
 This project uses AI for implementation without outsourcing engineering understanding.
 
@@ -145,7 +142,3 @@ Key rules:
 - Examine relevant failure paths, concurrency issues, and performance implications.
 
 - Correct me clearly when my technical reasoning is wrong.
-
-- Maintain `LEARNING.md` for important concepts and decisions.
-
-- Maintain `SYSTEM.md` when the system architecture meaningfully changes.
