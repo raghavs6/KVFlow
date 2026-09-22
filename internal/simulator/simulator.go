@@ -2,11 +2,14 @@
 package simulator
 
 import (
+	"errors"
 	"time"
 
 	"github.com/raghavs6/KVFlow/internal/costmodel"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
 )
+
+var errUnknownAction = errors.New("unknown action")
 
 // Request describes the token work needed before generation can begin.
 type Request struct {
@@ -31,7 +34,33 @@ type Scenario struct {
 
 // Decide predicts each feasible plan and returns the one with the lowest TTFT.
 func Decide(scenario Scenario) (scheduler.Candidate, error) {
-	candidates, err := costmodel.Estimate(costmodel.Inputs{
+	candidates, err := estimate(scenario)
+	if err != nil {
+		return scheduler.Candidate{}, err
+	}
+
+	return scheduler.ChooseLowestTTFT(candidates)
+}
+
+// ActualTTFT returns how long action really takes under the true scenario.
+// Truth reuses the cost model's formula, so the only way a decision can be
+// wrong is that it was made from a stale belief about the scenario.
+func ActualTTFT(truth Scenario, action scheduler.Action) (time.Duration, error) {
+	candidates, err := estimate(truth)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, candidate := range candidates {
+		if candidate.Action == action {
+			return candidate.EstimatedTTFT, nil
+		}
+	}
+	return 0, errUnknownAction
+}
+
+func estimate(scenario Scenario) ([]scheduler.Candidate, error) {
+	return costmodel.Estimate(costmodel.Inputs{
 		QueueA:               scenario.Source.Queue,
 		QueueB:               scenario.Destination.Queue,
 		PrefixTokens:         scenario.Request.PrefixTokens,
@@ -41,9 +70,4 @@ func Decide(scenario Scenario) (scheduler.Candidate, error) {
 		KVBytesPerToken:      scenario.KVBytesPerToken,
 		BandwidthBytesPerSec: scenario.BandwidthBytesPerSec,
 	})
-	if err != nil {
-		return scheduler.Candidate{}, err
-	}
-
-	return scheduler.ChooseLowestTTFT(candidates)
 }

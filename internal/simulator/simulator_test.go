@@ -61,6 +61,35 @@ func TestDecideRejectsInvalidScenario(t *testing.T) {
 	}
 }
 
+func TestActualTTFTUsesTruthNotBelief(t *testing.T) {
+	belief := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	truth := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+
+	choice, err := Decide(belief)
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if choice.Action != scheduler.ActionTransfer || choice.EstimatedTTFT != 220*time.Millisecond {
+		t.Fatalf("Decide() = %+v, want transfer predicted at 220ms", choice)
+	}
+
+	got, err := ActualTTFT(truth, choice.Action)
+	if err != nil {
+		t.Fatalf("ActualTTFT() error = %v", err)
+	}
+	if want := 2020 * time.Millisecond; got != want {
+		t.Fatalf("ActualTTFT() = %v, want %v", got, want)
+	}
+}
+
+func TestActualTTFTRejectsUnknownAction(t *testing.T) {
+	truth := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+
+	if _, err := ActualTTFT(truth, scheduler.Action("teleport")); err == nil {
+		t.Fatal("ActualTTFT() error = nil, want an unknown-action error")
+	}
+}
+
 func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64) Scenario {
 	return Scenario{
 		Source: Worker{
