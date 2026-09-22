@@ -90,6 +90,46 @@ func TestActualTTFTRejectsUnknownAction(t *testing.T) {
 	}
 }
 
+func TestRegret(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+
+	tests := []struct {
+		name   string
+		belief Scenario
+		truth  Scenario
+		want   time.Duration
+	}{
+		{name: "stale belief pays for transfer over wait", belief: fast, truth: congested, want: 1600 * time.Millisecond},
+		{name: "accurate belief has no regret", belief: congested, truth: congested, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			choice, err := Decide(tt.belief)
+			if err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+
+			got, err := Regret(tt.truth, choice.Action)
+			if err != nil {
+				t.Fatalf("Regret() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Regret() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRegretRejectsUnknownAction(t *testing.T) {
+	truth := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+
+	if _, err := Regret(truth, scheduler.Action("teleport")); err == nil {
+		t.Fatal("Regret() error = nil, want an unknown-action error")
+	}
+}
+
 func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64) Scenario {
 	return Scenario{
 		Source: Worker{

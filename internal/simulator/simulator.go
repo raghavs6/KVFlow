@@ -59,6 +59,21 @@ func ActualTTFT(truth Scenario, action scheduler.Action) (time.Duration, error) 
 	return 0, errUnknownAction
 }
 
+// Regret returns how much slower chosen really is than the choice a scheduler
+// with perfect knowledge of truth would have made.
+func Regret(truth Scenario, chosen scheduler.Action) (time.Duration, error) {
+	actual, err := ActualTTFT(truth, chosen)
+	if err != nil {
+		return 0, err
+	}
+
+	best, err := Decide(truth)
+	if err != nil {
+		return 0, err
+	}
+	return actual - best.EstimatedTTFT, nil
+}
+
 func estimate(scenario Scenario) ([]scheduler.Candidate, error) {
 	return costmodel.Estimate(costmodel.Inputs{
 		QueueA:               scenario.Source.Queue,
