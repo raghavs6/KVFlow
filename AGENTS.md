@@ -119,9 +119,9 @@ See section 5 for *how* to explain. This section is about *when*.
 - Flag speculative abstractions even when a plan calls for them.
 - Push back if I'm scoping badly or building the wrong thing next.
 
-## 11. Where things live
+## 11. Documentation scope
 
-- `PROJECT.md` — the brief: problem, architecture, data model, milestones, open questions.
+- Do not update `LEARNING.md` or `PROJECT.md` unless the user explicitly asks.
 
 This project uses AI for implementation without outsourcing engineering understanding.
 
