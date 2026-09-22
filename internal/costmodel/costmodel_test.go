@@ -28,7 +28,7 @@ func TestEstimate(t *testing.T) {
 			},
 		},
 		{
-			name: "recompute wins with congested network",
+			name: "recompute beats transfer with congested network",
 			inputs: baseInputs(
 				400*time.Millisecond,
 				50*time.Millisecond,
