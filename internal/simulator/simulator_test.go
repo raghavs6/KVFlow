@@ -1,0 +1,81 @@
+package simulator
+
+import (
+	"testing"
+	"time"
+
+	"github.com/raghavs6/KVFlow/internal/scheduler"
+)
+
+func TestDecide(t *testing.T) {
+	tests := []struct {
+		name     string
+		scenario Scenario
+		want     scheduler.Candidate
+	}{
+		{
+			name:     "fast network selects transfer",
+			scenario: baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000),
+			want: scheduler.Candidate{
+				Action:        scheduler.ActionTransfer,
+				EstimatedTTFT: 220 * time.Millisecond,
+			},
+		},
+		{
+			name:     "congested network and busy source select recompute",
+			scenario: baseScenario(3*time.Second, 50*time.Millisecond, 1_000_000_000),
+			want: scheduler.Candidate{
+				Action:        scheduler.ActionRecompute,
+				EstimatedTTFT: 1070 * time.Millisecond,
+			},
+		},
+		{
+			name:     "short source queue selects wait",
+			scenario: baseScenario(100*time.Millisecond, 300*time.Millisecond, 10_000_000_000),
+			want: scheduler.Candidate{
+				Action:        scheduler.ActionWait,
+				EstimatedTTFT: 120 * time.Millisecond,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Decide(tt.scenario)
+			if err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Decide() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecideRejectsInvalidScenario(t *testing.T) {
+	scenario := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	scenario.BandwidthBytesPerSec = 0
+
+	if _, err := Decide(scenario); err == nil {
+		t.Fatal("Decide() error = nil, want an invalid-input error")
+	}
+}
+
+func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64) Scenario {
+	return Scenario{
+		Source: Worker{
+			Queue:               sourceQueue,
+			PrefillTokensPerSec: 50_000,
+		},
+		Destination: Worker{
+			Queue:               destinationQueue,
+			PrefillTokensPerSec: 50_000,
+		},
+		Request: Request{
+			PrefixTokens: 50_000,
+			SuffixTokens: 1_000,
+		},
+		KVBytesPerToken:      40_000,
+		BandwidthBytesPerSec: bandwidth,
+	}
+}
