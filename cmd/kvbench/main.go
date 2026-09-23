@@ -20,7 +20,7 @@ const (
 	noiseSpread    = 0.3
 	fastBandwidth  = 10_000_000_000
 	slowBandwidth  = 1_000_000_000
-	sourceQueue    = 400 * time.Millisecond
+	sourceQueue    = 1500 * time.Millisecond
 	destQueue      = 50 * time.Millisecond
 	prefixTokens   = 50_000
 	suffixTokens   = 1_000
