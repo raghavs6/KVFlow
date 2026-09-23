@@ -189,7 +189,7 @@ func TestRunAdaptiveRecoversAfterCongestion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunAdaptive(10_000_000_000, tt.alpha, truths)
+			got, err := RunAdaptive(10_000_000_000, tt.alpha, 0, truths)
 			if err != nil {
 				t.Fatalf("RunAdaptive() error = %v", err)
 			}
@@ -212,7 +212,7 @@ func TestRunAdaptiveMissesRecoveryWithoutExploration(t *testing.T) {
 	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
 	truths := []Scenario{fast, fast, congested, congested, fast, fast, fast}
 
-	got, err := RunAdaptive(10_000_000_000, 0.5, truths)
+	got, err := RunAdaptive(10_000_000_000, 0.5, 0, truths)
 	if err != nil {
 		t.Fatalf("RunAdaptive() error = %v", err)
 	}
@@ -235,9 +235,67 @@ func TestRunAdaptiveRejectsInvalidAlpha(t *testing.T) {
 	truths := []Scenario{baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)}
 
 	for _, alpha := range []float64{0, -0.5, 1.5} {
-		if _, err := RunAdaptive(10_000_000_000, alpha, truths); err == nil {
+		if _, err := RunAdaptive(10_000_000_000, alpha, 0, truths); err == nil {
 			t.Errorf("RunAdaptive(alpha=%v) error = nil, want an invalid-alpha error", alpha)
 		}
+	}
+}
+
+func TestRunAdaptiveProbing(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+	const ms = time.Millisecond
+
+	tests := []struct {
+		name   string
+		truths []Scenario
+		want   []time.Duration
+	}{
+		{
+			// Probes at requests 6, 9 and 12 pull the belief back toward
+			// 10 GB/s; transfer wins again at request 13.
+			name: "probes rediscover a recovered network",
+			truths: []Scenario{
+				fast, fast, congested, congested,
+				fast, fast, fast, fast, fast, fast, fast, fast, fast,
+			},
+			want: []time.Duration{
+				0, 0, 1600 * ms, 0,
+				200 * ms, 0, 200 * ms, 200 * ms, 0, 200 * ms, 200 * ms, 0, 0,
+			},
+		},
+		{
+			// The probe at request 5 pays full regret because the network
+			// is still congested.
+			name:   "probes cost regret while congestion persists",
+			truths: []Scenario{fast, congested, congested, congested, congested, congested},
+			want:   []time.Duration{0, 1600 * ms, 0, 0, 1600 * ms, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunAdaptive(10_000_000_000, 0.5, 2, tt.truths)
+			if err != nil {
+				t.Fatalf("RunAdaptive() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(tt.want))
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestRunAdaptiveRejectsNegativeProbeEvery(t *testing.T) {
+	truths := []Scenario{baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)}
+
+	if _, err := RunAdaptive(10_000_000_000, 0.5, -1, truths); err == nil {
+		t.Fatal("RunAdaptive(probeEvery=-1) error = nil, want an invalid-probe error")
 	}
 }
 

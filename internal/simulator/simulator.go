@@ -12,6 +12,7 @@ import (
 var (
 	errUnknownAction = errors.New("unknown action")
 	errInvalidAlpha  = errors.New("alpha must be in (0, 1]")
+	errInvalidProbe  = errors.New("probeEvery must not be negative")
 )
 
 // Request describes the token work needed before generation can begin.
@@ -99,15 +100,21 @@ func RunStatic(belief Scenario, truths []Scenario) ([]time.Duration, error) {
 // RunAdaptive scores a sequence of true scenarios while learning bandwidth
 // from each executed transfer with an EWMA. Queues and prefill rates are
 // taken fresh from each scenario, as if reported by workers; only bandwidth
-// is learned. It returns the regret of each request in order.
-func RunAdaptive(initialBandwidth, alpha float64, truths []Scenario) ([]time.Duration, error) {
+// is learned. After probeEvery requests without a transfer, the next request
+// is forced to transfer so bandwidth is measured again; 0 disables probing.
+// It returns the regret of each request in order.
+func RunAdaptive(initialBandwidth, alpha float64, probeEvery int, truths []Scenario) ([]time.Duration, error) {
 	if !(alpha > 0 && alpha <= 1) {
 		return nil, errInvalidAlpha
+	}
+	if probeEvery < 0 {
+		return nil, errInvalidProbe
 	}
 
 	// Average seconds per byte rather than bytes per second: transfer time is
 	// linear in it, so the averaged estimate matches the average observed time.
 	secondsPerByte := 1 / initialBandwidth
+	sinceTransfer := 0
 	regrets := make([]time.Duration, len(truths))
 	for i, truth := range truths {
 		belief := truth
@@ -117,12 +124,17 @@ func RunAdaptive(initialBandwidth, alpha float64, truths []Scenario) ([]time.Dur
 		if err != nil {
 			return nil, err
 		}
+		if probeEvery > 0 && sinceTransfer >= probeEvery {
+			choice.Action = scheduler.ActionTransfer
+		}
 		regrets[i], err = Regret(truth, choice.Action)
 		if err != nil {
 			return nil, err
 		}
 
+		sinceTransfer++
 		if choice.Action == scheduler.ActionTransfer {
+			sinceTransfer = 0
 			// The worker reports transfer duration / bytes, which is exactly
 			// the true seconds per byte in this noise-free simulator.
 			observed := 1 / truth.BandwidthBytesPerSec
