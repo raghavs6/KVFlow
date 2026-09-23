@@ -16,7 +16,9 @@ import (
 
 const (
 	requests       = 2000
-	flapPeriod     = 200
+	flapMinPeriod  = 150
+	flapMaxPeriod  = 250
+	workloadSeed   = 1
 	seeds          = 20
 	noiseSpread    = 0.3
 	fastBandwidth  = 10_000_000_000
@@ -43,7 +45,8 @@ type policy struct {
 func main() {
 	fast := scenario(fastBandwidth)
 	slow := scenario(slowBandwidth)
-	flapping, err := simulator.Flapping(requests, flapPeriod, fast, slow)
+	flapping, err := simulator.Flapping(
+		rand.New(rand.NewPCG(workloadSeed, workloadSeed)), requests, flapMinPeriod, flapMaxPeriod, fast, slow)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -78,8 +81,8 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Mean regret per request (ms), %d requests, %d seeds, noise ±%.0f%%, flap period %d\n\n",
-		requests, seeds, noiseSpread*100, flapPeriod)
+	fmt.Printf("Mean regret per request (ms), %d requests, %d seeds, noise ±%.0f%%, flap period %d–%d\n\n",
+		requests, seeds, noiseSpread*100, flapMinPeriod, flapMaxPeriod)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
 	fmt.Fprint(w, "policy\t")
 	for _, wl := range workloads {
