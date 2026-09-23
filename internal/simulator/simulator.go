@@ -102,8 +102,15 @@ func RunStatic(belief Scenario, truths []Scenario) ([]time.Duration, error) {
 // taken fresh from each scenario, as if reported by workers; only bandwidth
 // is learned. After probeEvery requests without a transfer, the next request
 // is forced to transfer so bandwidth is measured again; 0 disables probing.
-// It returns the regret of each request in order.
-func RunAdaptive(initialBandwidth, alpha float64, probeEvery int, truths []Scenario) ([]time.Duration, error) {
+// observe turns a transfer's true seconds per byte into what the worker
+// reports, which lets callers add measurement noise. It returns the regret of
+// each request in order.
+func RunAdaptive(
+	initialBandwidth, alpha float64,
+	probeEvery int,
+	observe func(trueSecondsPerByte float64) float64,
+	truths []Scenario,
+) ([]time.Duration, error) {
 	if !(alpha > 0 && alpha <= 1) {
 		return nil, errInvalidAlpha
 	}
@@ -135,9 +142,9 @@ func RunAdaptive(initialBandwidth, alpha float64, probeEvery int, truths []Scena
 		sinceTransfer++
 		if choice.Action == scheduler.ActionTransfer {
 			sinceTransfer = 0
-			// The worker reports transfer duration / bytes, which is exactly
-			// the true seconds per byte in this noise-free simulator.
-			observed := 1 / truth.BandwidthBytesPerSec
+			// The worker reports transfer duration / bytes; observe decides
+			// how far that report is from the true seconds per byte.
+			observed := observe(1 / truth.BandwidthBytesPerSec)
 			secondsPerByte = (1-alpha)*secondsPerByte + alpha*observed
 		}
 	}
