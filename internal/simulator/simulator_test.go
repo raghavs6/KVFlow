@@ -205,6 +205,32 @@ func TestRunAdaptiveRecoversAfterCongestion(t *testing.T) {
 	}
 }
 
+// This pins down a known weakness: after switching to wait, the adaptive run
+// never transfers again, so it never observes that the network recovered.
+func TestRunAdaptiveMissesRecoveryWithoutExploration(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+	truths := []Scenario{fast, fast, congested, congested, fast, fast, fast}
+
+	got, err := RunAdaptive(10_000_000_000, 0.5, truths)
+	if err != nil {
+		t.Fatalf("RunAdaptive() error = %v", err)
+	}
+
+	want := []time.Duration{
+		0, 0, 1600 * time.Millisecond, 0,
+		200 * time.Millisecond, 200 * time.Millisecond, 200 * time.Millisecond,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestRunAdaptiveRejectsInvalidAlpha(t *testing.T) {
 	truths := []Scenario{baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)}
 
