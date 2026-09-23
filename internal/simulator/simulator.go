@@ -74,6 +74,25 @@ func Regret(truth Scenario, chosen scheduler.Action) (time.Duration, error) {
 	return actual - best.EstimatedTTFT, nil
 }
 
+// RunStatic scores a sequence of true scenarios against one belief that never
+// updates, like a cost model calibrated once at startup. It returns the regret
+// of each request in order.
+func RunStatic(belief Scenario, truths []Scenario) ([]time.Duration, error) {
+	choice, err := Decide(belief)
+	if err != nil {
+		return nil, err
+	}
+
+	regrets := make([]time.Duration, len(truths))
+	for i, truth := range truths {
+		regrets[i], err = Regret(truth, choice.Action)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return regrets, nil
+}
+
 func estimate(scenario Scenario) ([]scheduler.Candidate, error) {
 	return costmodel.Estimate(costmodel.Inputs{
 		QueueA:               scenario.Source.Queue,

@@ -130,6 +130,49 @@ func TestRegretRejectsUnknownAction(t *testing.T) {
 	}
 }
 
+func TestRunStaticKeepsPayingAfterCongestion(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+	truths := []Scenario{fast, fast, fast, congested, congested, congested}
+
+	got, err := RunStatic(fast, truths)
+	if err != nil {
+		t.Fatalf("RunStatic() error = %v", err)
+	}
+
+	want := []time.Duration{0, 0, 0, 1600 * time.Millisecond, 1600 * time.Millisecond, 1600 * time.Millisecond}
+	if len(got) != len(want) {
+		t.Fatalf("RunStatic() returned %d regrets, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("RunStatic()[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestRunStaticEmptySequence(t *testing.T) {
+	belief := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+
+	got, err := RunStatic(belief, nil)
+	if err != nil {
+		t.Fatalf("RunStatic() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("RunStatic() = %v, want no regrets", got)
+	}
+}
+
+func TestRunStaticRejectsInvalidTruth(t *testing.T) {
+	belief := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	invalid := belief
+	invalid.BandwidthBytesPerSec = 0
+
+	if _, err := RunStatic(belief, []Scenario{belief, invalid}); err == nil {
+		t.Fatal("RunStatic() error = nil, want an invalid-input error")
+	}
+}
+
 func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64) Scenario {
 	return Scenario{
 		Source: Worker{
