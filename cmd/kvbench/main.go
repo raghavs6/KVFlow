@@ -1,0 +1,122 @@
+// Command kvbench compares static and adaptive policies on simulated
+// workloads and prints mean regret per request.
+package main
+
+import (
+	"fmt"
+	"log"
+	"math/rand/v2"
+	"os"
+	"text/tabwriter"
+	"time"
+
+	"github.com/raghavs6/KVFlow/internal/simulator"
+)
+
+const (
+	requests       = 2000
+	flapPeriod     = 200
+	seeds          = 20
+	noiseSpread    = 0.3
+	fastBandwidth  = 10_000_000_000
+	slowBandwidth  = 1_000_000_000
+	sourceQueue    = 400 * time.Millisecond
+	destQueue      = 50 * time.Millisecond
+	prefixTokens   = 50_000
+	suffixTokens   = 1_000
+	prefillRate    = 50_000
+	kvBytesPerTokn = 40_000
+)
+
+type workload struct {
+	name   string
+	truths []simulator.Scenario
+}
+
+type policy struct {
+	name string
+	// run returns per-request regret for one seed.
+	run func(truths []simulator.Scenario, seed uint64) ([]time.Duration, error)
+}
+
+func main() {
+	fast := scenario(fastBandwidth)
+	slow := scenario(slowBandwidth)
+	flapping, err := simulator.Flapping(requests, flapPeriod, fast, slow)
+	if err != nil {
+		log.Fatal(err)
+	}
+	workloads := []workload{
+		{"stable", simulator.Stable(requests, fast)},
+		{"slowdown+recovery", simulator.SlowdownThenRecovery(requests, fast, slow)},
+		{"flapping", flapping},
+	}
+
+	policies := []policy{{
+		name: "static",
+		run: func(truths []simulator.Scenario, _ uint64) ([]time.Duration, error) {
+			return simulator.RunStatic(fast, truths)
+		},
+	}}
+	for _, alpha := range []float64{0.1, 0.5} {
+		for _, probeEvery := range []int{0, 5, 20, 100} {
+			policies = append(policies, policy{
+				name: fmt.Sprintf("adaptive K=%d α=%.1f", probeEvery, alpha),
+				run: func(truths []simulator.Scenario, seed uint64) ([]time.Duration, error) {
+					observe, err := simulator.NoisyObserve(rand.New(rand.NewPCG(seed, seed)), noiseSpread)
+					if err != nil {
+						return nil, err
+					}
+					return simulator.RunAdaptive(fastBandwidth, alpha, probeEvery, observe, truths)
+				},
+			})
+		}
+	}
+
+	fmt.Printf("Mean regret per request (ms), %d requests, %d seeds, noise ±%.0f%%, flap period %d\n\n",
+		requests, seeds, noiseSpread*100, flapPeriod)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprint(w, "policy\t")
+	for _, wl := range workloads {
+		fmt.Fprintf(w, "%s\t", wl.name)
+	}
+	fmt.Fprintln(w)
+
+	for _, p := range policies {
+		fmt.Fprintf(w, "%s\t", p.name)
+		for _, wl := range workloads {
+			mean, err := meanRegretMs(p, wl.truths)
+			if err != nil {
+				log.Fatalf("%s on %s: %v", p.name, wl.name, err)
+			}
+			fmt.Fprintf(w, "%.1f\t", mean)
+		}
+		fmt.Fprintln(w)
+	}
+	w.Flush()
+}
+
+// meanRegretMs averages regret over every request of every seed.
+func meanRegretMs(p policy, truths []simulator.Scenario) (float64, error) {
+	var total time.Duration
+	for seed := range uint64(seeds) {
+		regrets, err := p.run(truths, seed)
+		if err != nil {
+			return 0, err
+		}
+		for _, r := range regrets {
+			total += r
+		}
+	}
+	return float64(total) / float64(time.Millisecond) / float64(seeds*len(truths)), nil
+}
+
+func scenario(bandwidth float64) simulator.Scenario {
+	return simulator.Scenario{
+		Source:               simulator.Worker{Queue: sourceQueue, PrefillTokensPerSec: prefillRate},
+		Destination:          simulator.Worker{Queue: destQueue, PrefillTokensPerSec: prefillRate},
+		Request:              simulator.Request{PrefixTokens: prefixTokens, SuffixTokens: suffixTokens},
+		KVBytesPerToken:      kvBytesPerTokn,
+		BandwidthBytesPerSec: bandwidth,
+	}
+}
