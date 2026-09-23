@@ -9,7 +9,10 @@ import (
 	"github.com/raghavs6/KVFlow/internal/scheduler"
 )
 
-var errUnknownAction = errors.New("unknown action")
+var (
+	errUnknownAction = errors.New("unknown action")
+	errInvalidAlpha  = errors.New("alpha must be in (0, 1]")
+)
 
 // Request describes the token work needed before generation can begin.
 type Request struct {
@@ -88,6 +91,42 @@ func RunStatic(belief Scenario, truths []Scenario) ([]time.Duration, error) {
 		regrets[i], err = Regret(truth, choice.Action)
 		if err != nil {
 			return nil, err
+		}
+	}
+	return regrets, nil
+}
+
+// RunAdaptive scores a sequence of true scenarios while learning bandwidth
+// from each executed transfer with an EWMA. Queues and prefill rates are
+// taken fresh from each scenario, as if reported by workers; only bandwidth
+// is learned. It returns the regret of each request in order.
+func RunAdaptive(initialBandwidth, alpha float64, truths []Scenario) ([]time.Duration, error) {
+	if !(alpha > 0 && alpha <= 1) {
+		return nil, errInvalidAlpha
+	}
+
+	// Average seconds per byte rather than bytes per second: transfer time is
+	// linear in it, so the averaged estimate matches the average observed time.
+	secondsPerByte := 1 / initialBandwidth
+	regrets := make([]time.Duration, len(truths))
+	for i, truth := range truths {
+		belief := truth
+		belief.BandwidthBytesPerSec = 1 / secondsPerByte
+
+		choice, err := Decide(belief)
+		if err != nil {
+			return nil, err
+		}
+		regrets[i], err = Regret(truth, choice.Action)
+		if err != nil {
+			return nil, err
+		}
+
+		if choice.Action == scheduler.ActionTransfer {
+			// The worker reports transfer duration / bytes, which is exactly
+			// the true seconds per byte in this noise-free simulator.
+			observed := 1 / truth.BandwidthBytesPerSec
+			secondsPerByte = (1-alpha)*secondsPerByte + alpha*observed
 		}
 	}
 	return regrets, nil

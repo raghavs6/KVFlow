@@ -173,6 +173,48 @@ func TestRunStaticRejectsInvalidTruth(t *testing.T) {
 	}
 }
 
+func TestRunAdaptiveRecoversAfterCongestion(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+	truths := []Scenario{fast, fast, fast, congested, congested, congested}
+
+	tests := []struct {
+		name  string
+		alpha float64
+		want  []time.Duration
+	}{
+		{name: "alpha 0.5 adapts after one bad transfer", alpha: 0.5, want: []time.Duration{0, 0, 0, 1600 * time.Millisecond, 0, 0}},
+		{name: "alpha 0.1 adapts after two bad transfers", alpha: 0.1, want: []time.Duration{0, 0, 0, 1600 * time.Millisecond, 1600 * time.Millisecond, 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunAdaptive(10_000_000_000, tt.alpha, truths)
+			if err != nil {
+				t.Fatalf("RunAdaptive() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(tt.want))
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestRunAdaptiveRejectsInvalidAlpha(t *testing.T) {
+	truths := []Scenario{baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)}
+
+	for _, alpha := range []float64{0, -0.5, 1.5} {
+		if _, err := RunAdaptive(10_000_000_000, alpha, truths); err == nil {
+			t.Errorf("RunAdaptive(alpha=%v) error = nil, want an invalid-alpha error", alpha)
+		}
+	}
+}
+
 func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64) Scenario {
 	return Scenario{
 		Source: Worker{
