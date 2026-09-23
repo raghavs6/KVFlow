@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/raghavs6/KVFlow/internal/scheduler"
 	"github.com/raghavs6/KVFlow/internal/simulator"
 )
 
@@ -46,12 +47,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	workloads := []workload{
-		{"stable-fast", simulator.Stable(requests, fast)},
-		{"stable-slow", simulator.Stable(requests, slow)},
+	// Only these workloads have change points to adapt to.
+	changing := []workload{
 		{"slowdown+recovery", simulator.SlowdownThenRecovery(requests, fast, slow)},
 		{"flapping", flapping},
 	}
+	workloads := append([]workload{
+		{"stable-fast", simulator.Stable(requests, fast)},
+		{"stable-slow", simulator.Stable(requests, slow)},
+	}, changing...)
 
 	policies := []policy{{
 		name: "static",
@@ -95,6 +99,35 @@ func main() {
 		fmt.Fprintln(w)
 	}
 	w.Flush()
+
+	fmt.Println("\nMean requests until the policy believes the new best action")
+	fmt.Println("(↓ slowdown: recompute becomes best, ↑ recovery: transfer becomes best)")
+	fmt.Println()
+	w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprint(w, "policy\t")
+	for _, wl := range changing {
+		fmt.Fprintf(w, "%s ↓\t%s ↑\t", wl.name, wl.name)
+	}
+	fmt.Fprintln(w)
+
+	for _, p := range policies {
+		fmt.Fprintf(w, "%s\t", p.name)
+		for _, wl := range changing {
+			for _, to := range []scheduler.Action{scheduler.ActionRecompute, scheduler.ActionTransfer} {
+				mean, adapted, err := meanAdaptation(p, wl.truths, to)
+				if err != nil {
+					log.Fatalf("%s on %s: %v", p.name, wl.name, err)
+				}
+				if adapted {
+					fmt.Fprintf(w, "%.1f\t", mean)
+				} else {
+					fmt.Fprint(w, "never\t")
+				}
+			}
+		}
+		fmt.Fprintln(w)
+	}
+	w.Flush()
 }
 
 // meanRegretMs averages regret over every request of every seed.
@@ -110,6 +143,34 @@ func meanRegretMs(p policy, truths []simulator.Scenario) (float64, error) {
 		}
 	}
 	return float64(total) / float64(time.Millisecond) / float64(seeds*len(truths)), nil
+}
+
+// meanAdaptation averages adaptation time over every change point, across all
+// seeds, where to becomes the best action. adapted is false if the policy
+// failed to adapt at any of them.
+func meanAdaptation(p policy, truths []simulator.Scenario, to scheduler.Action) (mean float64, adapted bool, err error) {
+	total, count := 0, 0
+	for seed := range uint64(seeds) {
+		outcomes, err := p.run(truths, seed)
+		if err != nil {
+			return 0, false, err
+		}
+		adaptations, err := simulator.AdaptationTimes(truths, outcomes)
+		if err != nil {
+			return 0, false, err
+		}
+		for _, a := range adaptations {
+			if a.To != to {
+				continue
+			}
+			if !a.Adapted {
+				return 0, false, nil
+			}
+			total += a.Requests
+			count++
+		}
+	}
+	return float64(total) / float64(count), true, nil
 }
 
 func scenario(bandwidth float64) simulator.Scenario {
