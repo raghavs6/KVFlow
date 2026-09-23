@@ -47,7 +47,8 @@ func main() {
 		log.Fatal(err)
 	}
 	workloads := []workload{
-		{"stable", simulator.Stable(requests, fast)},
+		{"stable-fast", simulator.Stable(requests, fast)},
+		{"stable-slow", simulator.Stable(requests, slow)},
 		{"slowdown+recovery", simulator.SlowdownThenRecovery(requests, fast, slow)},
 		{"flapping", flapping},
 	}
