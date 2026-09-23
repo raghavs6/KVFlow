@@ -3,6 +3,7 @@ package simulator
 
 import (
 	"errors"
+	"math/rand/v2"
 	"time"
 
 	"github.com/raghavs6/KVFlow/internal/costmodel"
@@ -13,6 +14,7 @@ var (
 	errUnknownAction = errors.New("unknown action")
 	errInvalidAlpha  = errors.New("alpha must be in (0, 1]")
 	errInvalidProbe  = errors.New("probeEvery must not be negative")
+	errInvalidSpread = errors.New("spread must be in [0, 1)")
 )
 
 // Request describes the token work needed before generation can begin.
@@ -149,6 +151,20 @@ func RunAdaptive(
 		}
 	}
 	return regrets, nil
+}
+
+// NoisyObserve returns an observe function for RunAdaptive that scales each
+// true seconds-per-byte by a uniform factor in [1-spread, 1+spread]. The
+// noise is unbiased on average, so it makes reports jittery without making
+// the network look consistently faster or slower. Equal rng seeds give equal
+// reports.
+func NoisyObserve(rng *rand.Rand, spread float64) (func(float64) float64, error) {
+	if !(spread >= 0 && spread < 1) {
+		return nil, errInvalidSpread
+	}
+	return func(trueSecondsPerByte float64) float64 {
+		return trueSecondsPerByte * (1 + spread*(2*rng.Float64()-1))
+	}, nil
 }
 
 func estimate(scenario Scenario) ([]scheduler.Candidate, error) {

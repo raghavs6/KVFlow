@@ -1,6 +1,7 @@
 package simulator
 
 import (
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -317,6 +318,44 @@ func TestRunAdaptiveMisledByNoisyObservation(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNoisyObserveIsSeededAndBounded(t *testing.T) {
+	const spread = 0.3
+	first, err := NoisyObserve(rand.New(rand.NewPCG(1, 2)), spread)
+	if err != nil {
+		t.Fatalf("NoisyObserve() error = %v", err)
+	}
+	second, err := NoisyObserve(rand.New(rand.NewPCG(1, 2)), spread)
+	if err != nil {
+		t.Fatalf("NoisyObserve() error = %v", err)
+	}
+
+	const truth = 1e-9
+	sawNoise := false
+	for i := range 1000 {
+		a, b := first(truth), second(truth)
+		if a != b {
+			t.Fatalf("report %d differs across equal seeds: %v vs %v", i, a, b)
+		}
+		if a < truth*(1-spread) || a > truth*(1+spread) {
+			t.Fatalf("report %d = %v, outside ±%v of %v", i, a, spread, truth)
+		}
+		if a != truth {
+			sawNoise = true
+		}
+	}
+	if !sawNoise {
+		t.Fatal("every report equaled the truth, want noise")
+	}
+}
+
+func TestNoisyObserveRejectsInvalidSpread(t *testing.T) {
+	for _, spread := range []float64{-0.1, 1, 1.5} {
+		if _, err := NoisyObserve(rand.New(rand.NewPCG(1, 2)), spread); err == nil {
+			t.Errorf("NoisyObserve(spread=%v) error = nil, want an invalid-spread error", spread)
 		}
 	}
 }
