@@ -80,23 +80,33 @@ func Regret(truth Scenario, chosen scheduler.Action) (time.Duration, error) {
 	return actual - best.EstimatedTTFT, nil
 }
 
+// Outcome records one request of a run.
+type Outcome struct {
+	// Regret is how much slower the executed action was than the best one.
+	Regret time.Duration
+	// Believed is the action the policy's own estimates ranked best. It
+	// differs from the executed action only when a probe forces a transfer.
+	Believed scheduler.Action
+}
+
 // RunStatic scores a sequence of true scenarios against one belief that never
-// updates, like a cost model calibrated once at startup. It returns the regret
-// of each request in order.
-func RunStatic(belief Scenario, truths []Scenario) ([]time.Duration, error) {
+// updates, like a cost model calibrated once at startup. It returns the
+// outcome of each request in order.
+func RunStatic(belief Scenario, truths []Scenario) ([]Outcome, error) {
 	choice, err := Decide(belief)
 	if err != nil {
 		return nil, err
 	}
 
-	regrets := make([]time.Duration, len(truths))
+	outcomes := make([]Outcome, len(truths))
 	for i, truth := range truths {
-		regrets[i], err = Regret(truth, choice.Action)
+		regret, err := Regret(truth, choice.Action)
 		if err != nil {
 			return nil, err
 		}
+		outcomes[i] = Outcome{Regret: regret, Believed: choice.Action}
 	}
-	return regrets, nil
+	return outcomes, nil
 }
 
 // RunAdaptive scores a sequence of true scenarios while learning bandwidth
@@ -105,14 +115,14 @@ func RunStatic(belief Scenario, truths []Scenario) ([]time.Duration, error) {
 // is learned. After probeEvery requests without a transfer, the next request
 // is forced to transfer so bandwidth is measured again; 0 disables probing.
 // observe turns a transfer's true seconds per byte into what the worker
-// reports, which lets callers add measurement noise. It returns the regret of
+// reports, which lets callers add measurement noise. It returns the outcome of
 // each request in order.
 func RunAdaptive(
 	initialBandwidth, alpha float64,
 	probeEvery int,
 	observe func(trueSecondsPerByte float64) float64,
 	truths []Scenario,
-) ([]time.Duration, error) {
+) ([]Outcome, error) {
 	if !(alpha > 0 && alpha <= 1) {
 		return nil, errInvalidAlpha
 	}
@@ -124,7 +134,7 @@ func RunAdaptive(
 	// linear in it, so the averaged estimate matches the average observed time.
 	secondsPerByte := 1 / initialBandwidth
 	sinceTransfer := 0
-	regrets := make([]time.Duration, len(truths))
+	outcomes := make([]Outcome, len(truths))
 	for i, truth := range truths {
 		belief := truth
 		belief.BandwidthBytesPerSec = 1 / secondsPerByte
@@ -133,16 +143,18 @@ func RunAdaptive(
 		if err != nil {
 			return nil, err
 		}
+		action := choice.Action
 		if probeEvery > 0 && sinceTransfer >= probeEvery {
-			choice.Action = scheduler.ActionTransfer
+			action = scheduler.ActionTransfer
 		}
-		regrets[i], err = Regret(truth, choice.Action)
+		regret, err := Regret(truth, action)
 		if err != nil {
 			return nil, err
 		}
+		outcomes[i] = Outcome{Regret: regret, Believed: choice.Action}
 
 		sinceTransfer++
-		if choice.Action == scheduler.ActionTransfer {
+		if action == scheduler.ActionTransfer {
 			sinceTransfer = 0
 			// The worker reports transfer duration / bytes; observe decides
 			// how far that report is from the true seconds per byte.
@@ -150,7 +162,7 @@ func RunAdaptive(
 			secondsPerByte = (1-alpha)*secondsPerByte + alpha*observed
 		}
 	}
-	return regrets, nil
+	return outcomes, nil
 }
 
 // NoisyObserve returns an observe function for RunAdaptive that scales each

@@ -35,8 +35,8 @@ type workload struct {
 
 type policy struct {
 	name string
-	// run returns per-request regret for one seed.
-	run func(truths []simulator.Scenario, seed uint64) ([]time.Duration, error)
+	// run returns per-request outcomes for one seed.
+	run func(truths []simulator.Scenario, seed uint64) ([]simulator.Outcome, error)
 }
 
 func main() {
@@ -55,7 +55,7 @@ func main() {
 
 	policies := []policy{{
 		name: "static",
-		run: func(truths []simulator.Scenario, _ uint64) ([]time.Duration, error) {
+		run: func(truths []simulator.Scenario, _ uint64) ([]simulator.Outcome, error) {
 			return simulator.RunStatic(fast, truths)
 		},
 	}}
@@ -63,7 +63,7 @@ func main() {
 		for _, probeEvery := range []int{0, 5, 20, 100} {
 			policies = append(policies, policy{
 				name: fmt.Sprintf("adaptive K=%d α=%.1f", probeEvery, alpha),
-				run: func(truths []simulator.Scenario, seed uint64) ([]time.Duration, error) {
+				run: func(truths []simulator.Scenario, seed uint64) ([]simulator.Outcome, error) {
 					observe, err := simulator.NoisyObserve(rand.New(rand.NewPCG(seed, seed)), noiseSpread)
 					if err != nil {
 						return nil, err
@@ -101,12 +101,12 @@ func main() {
 func meanRegretMs(p policy, truths []simulator.Scenario) (float64, error) {
 	var total time.Duration
 	for seed := range uint64(seeds) {
-		regrets, err := p.run(truths, seed)
+		outcomes, err := p.run(truths, seed)
 		if err != nil {
 			return 0, err
 		}
-		for _, r := range regrets {
-			total += r
+		for _, o := range outcomes {
+			total += o.Regret
 		}
 	}
 	return float64(total) / float64(time.Millisecond) / float64(seeds*len(truths)), nil

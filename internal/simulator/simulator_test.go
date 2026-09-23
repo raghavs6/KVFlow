@@ -146,8 +146,8 @@ func TestRunStaticKeepsPayingAfterCongestion(t *testing.T) {
 		t.Fatalf("RunStatic() returned %d regrets, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("RunStatic()[%d] = %v, want %v", i, got[i], want[i])
+		if got[i].Regret != want[i] {
+			t.Errorf("RunStatic()[%d] = %v, want %v", i, got[i].Regret, want[i])
 		}
 	}
 }
@@ -198,8 +198,8 @@ func TestRunAdaptiveRecoversAfterCongestion(t *testing.T) {
 				t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(tt.want))
 			}
 			for i := range tt.want {
-				if got[i] != tt.want[i] {
-					t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], tt.want[i])
+				if got[i].Regret != tt.want[i] {
+					t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i].Regret, tt.want[i])
 				}
 			}
 		})
@@ -226,8 +226,8 @@ func TestRunAdaptiveMissesRecoveryWithoutExploration(t *testing.T) {
 		t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], want[i])
+		if got[i].Regret != want[i] {
+			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i].Regret, want[i])
 		}
 	}
 }
@@ -284,11 +284,61 @@ func TestRunAdaptiveProbing(t *testing.T) {
 				t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(tt.want))
 			}
 			for i := range tt.want {
-				if got[i] != tt.want[i] {
-					t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], tt.want[i])
+				if got[i].Regret != tt.want[i] {
+					t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i].Regret, tt.want[i])
 				}
 			}
 		})
+	}
+}
+
+// A probe executes a transfer without changing what the policy believes is
+// best, so adaptation can be measured from belief rather than from probes.
+func TestRunAdaptiveRecordsBeliefSeparatelyFromProbes(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+	truths := []Scenario{
+		fast, fast, congested, congested,
+		fast, fast, fast, fast, fast, fast, fast, fast, fast,
+	}
+	const (
+		T = scheduler.ActionTransfer
+		W = scheduler.ActionWait
+	)
+
+	outcomes, err := RunAdaptive(10_000_000_000, 0.5, 2, exact, truths)
+	if err != nil {
+		t.Fatalf("RunAdaptive() error = %v", err)
+	}
+
+	// Requests 6, 9 and 12 are probes: they transfer (zero regret on the
+	// recovered network) while the belief is still wait.
+	want := []scheduler.Action{T, T, T, W, W, W, W, W, W, W, W, W, T}
+	if len(outcomes) != len(want) {
+		t.Fatalf("RunAdaptive() returned %d outcomes, want %d", len(outcomes), len(want))
+	}
+	for i := range want {
+		if outcomes[i].Believed != want[i] {
+			t.Errorf("RunAdaptive()[%d].Believed = %s, want %s", i, outcomes[i].Believed, want[i])
+		}
+	}
+	if outcomes[5].Regret != 0 {
+		t.Errorf("RunAdaptive()[5].Regret = %v, want 0 because the probe transferred", outcomes[5].Regret)
+	}
+}
+
+func TestRunStaticBelievesOneAction(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+
+	outcomes, err := RunStatic(fast, []Scenario{fast, congested})
+	if err != nil {
+		t.Fatalf("RunStatic() error = %v", err)
+	}
+	for i, o := range outcomes {
+		if o.Believed != scheduler.ActionTransfer {
+			t.Errorf("RunStatic()[%d].Believed = %s, want transfer", i, o.Believed)
+		}
 	}
 }
 
@@ -316,8 +366,8 @@ func TestRunAdaptiveMisledByNoisyObservation(t *testing.T) {
 		t.Fatalf("RunAdaptive() returned %d regrets, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i], want[i])
+		if got[i].Regret != want[i] {
+			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i].Regret, want[i])
 		}
 	}
 }
