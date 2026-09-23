@@ -1,6 +1,4 @@
-
-
-# CLAUDE.md
+# AGENTS.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -119,13 +117,13 @@ See section 5 for *how* to explain. This section is about *when*.
 - Flag speculative abstractions even when a plan calls for them.
 - Push back if I'm scoping badly or building the wrong thing next.
 
-## 11. Documentation scope
+## 11. Where things live
 
-- Do not update `LEARNING.md` or `PROJECT.md` unless the user explicitly asks.
+- `PROJECT.md` — the brief: problem, architecture, data model, milestones, open questions.
 
 This project uses AI for implementation without outsourcing engineering understanding.
 
-Follow `AI_ENGINEERING_WORKFLOW.md` when working on substantial features.
+Follow `WORKFLOW.md` when working on substantial features.
 
 Key rules:
 
