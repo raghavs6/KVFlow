@@ -30,3 +30,40 @@ compute, and network measurements into three candidates without remembering or
 changing anything. It is like a calculator, not a history book. A later
 adaptive layer can learn better input rates while this estimator remains a
 small, deterministic conversion step.
+
+## How often to probe
+
+Once the adaptive policy stops transferring, it stops measuring the network.
+A probe is a transfer forced every K requests just to measure again. Two
+costs pull K in opposite directions:
+
+- Each probe on a network that is still slow costs the full gap between
+  transfer and the best action. On the stable-slow workload that is about
+  950 / (K+1) ms per request, paid forever.
+- Without probes, a policy that switched away from transfer never learns the
+  network recovered. On slowdown+recovery, K=0 pays about 850 ms per request
+  for the whole recovery phase.
+
+It is like checking whether a closed shop has reopened. Check every day and
+you waste many trips; never check and you miss that it opened. In the current
+benchmark K=20 with alpha 0.5 balances these best.
+
+## Metrics can look good for the wrong reason
+
+Adaptation time must be read next to regret. Static shows 0 for recoveries
+because it always believes transfer is best: it was never wrong in that
+direction, not quick to adapt. K=0 looks fast at later slowdowns on flapping
+for the same reason: it is stuck believing recompute.
+
+A benchmark can also reward coincidence. When flapping switched every 200
+requests, probing every 101 requests happened to land right after each
+recovery and looked like the best policy. Changing only the period exposed
+it. When one number is surprisingly good, change something that should not
+matter and see if the result survives.
+
+## Why noise sometimes speeds up recovery
+
+With alpha 0.5, the belief usually needs two fast probes to swing back to
+transfer. Measurement noise makes the slow-phase belief wobble; when it
+happens to sit a little lower, one fast probe is enough. That is why the
+measured recovery times were below the noise-free predictions.
