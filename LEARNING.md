@@ -67,3 +67,50 @@ With alpha 0.5, the belief usually needs two fast probes to swing back to
 transfer. Measurement noise makes the slow-phase belief wobble; when it
 happens to sit a little lower, one fast probe is enough. That is why the
 measured recovery times were below the noise-free predictions.
+
+## A wrong model shape can hide behind a fixed workload
+
+Real transfers pay a fixed startup plus a per-byte cost. The EWMA learns only
+a per-byte cost, but when every transfer is the same size it still predicts
+perfectly: it folds the startup into a slightly lower "effective bandwidth".
+The mistake only shows once sizes vary. A 200 ms startup spread over a small
+80 MB transfer makes bytes look about 13x more expensive, so the EWMA scared
+itself off large transfers that were actually best. On mixed sizes it had
+283-324 ms regret, five times worse than never learning (59 ms).
+
+It is like estimating taxi fares by price per mile when every ride has a flat
+pickup fee. Learn only from short rides and long rides look absurdly
+expensive. No single per-mile number can fit both.
+
+The fix was to learn the right shape: a line with an intercept (startup) and
+a slope (seconds per byte). With probing it reached 2-14 ms regret on the
+same workload. Learning harder does not fix a model that cannot represent
+the truth; changing its shape does.
+
+## A learner needs to see the variety it must explain
+
+The line learner can only separate startup from bandwidth after it has
+transferred two different sizes. If its first transfer is small, it decides
+bytes are expensive, recomputes every large prefix, and never gets the second
+point. Without probing it stays stuck (324 ms regret). A probe supplies the
+missing point. The data a policy collects depends on its own decisions, so a
+bad early belief can starve it of the evidence that would correct it.
+
+## Gradual slowdowns are cheap, gradual recoveries are not
+
+When bandwidth drifts slowly downward, every policy notices within about 5
+requests. Ordinary transfers keep measuring the link, and the switch happens
+where transfer and recompute cost about the same, so being a little late
+costs almost nothing.
+
+Drifting back up is harder than a sudden recovery. After a jump, one probe
+sees a fully fast network and moves the belief a lot. During drift, a probe
+just past the crossover sees a network only slightly faster than believed,
+and alpha 0.1 moves the belief 10% of that small gap. Meanwhile the network
+keeps improving. With alpha 0.1 and K=100 the belief never catches up before
+the run ends (92 ms regret, about the same as never probing), even though the
+same policy recovered from a sudden jump in 410 requests.
+
+Across every changing workload, K=20 with alpha 0.5 has had the lowest
+regret. Slowdowns of any shape are easy; speedups are only visible through
+probes, and gradual ones need frequent probes or a larger alpha.

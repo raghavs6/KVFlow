@@ -67,3 +67,49 @@ so the workload should not reward a probe schedule that matches one.
 kvbench draws one flapping workload from a fixed seed. Policy rankings were
 the same for workload seeds 1-4, but single cells for rarely-probing policies
 varied by up to about 50%, so only rankings should be read from one draw.
+
+## Hidden transfer startup in the simulated truth
+
+The simulated truth can charge every transfer a fixed `TransferStartup` that
+policies are never told. Truth is the cost model's formula with the true
+startup plugged in; beliefs pass their own startup estimate, so a belief can
+never pick up the truth's value by copying a scenario. Regret and adaptation
+time judge decisions against these true costs, because asking the model for
+the best action would hide exactly the error being measured.
+
+Workers report the real transfer duration, startup included, so a cost the
+model gets wrong leaks into what the learner sees, as it would in practice.
+
+## Static baseline
+
+Static means a bandwidth measured once at startup and never updated. Queues
+and the request are read fresh for each request, the same inputs adaptive
+policies get, so the comparison isolates learning. An earlier version froze
+the whole scenario, which silently predicted every transfer as a 50k-token
+one once prefix sizes varied.
+
+## Line learner
+
+`learner.Line` learns transfer time as `startup + bytes * secondsPerByte` by
+fitting a line through observed `(bytes, seconds)` points:
+
+- Exponentially weighted least squares, fading older points by `1 - alpha`,
+  so alpha means what it means for the EWMA. It stores weighted means and
+  deviations instead of raw sums of squares, which at ~1e18 lose precision.
+- A line is fit only when transfer sizes vary by at least 10% of their mean
+  (a guess, not a measurement). Below that, sizes 1% apart with 1 ms of
+  timing noise would fit a nonsense 300 ms startup.
+- Without enough spread it keeps its startup estimate and fits only the
+  slope, which makes it behave like the EWMA until it has evidence and lets
+  it remember a learned startup once only one size is being transferred.
+- A negative startup is pinned to 0; a falling line falls back rather than
+  learn a negative bandwidth.
+
+The EWMA is kept as a second `Learner` so kvbench compares the two directly.
+
+## Drift workload
+
+Drift moves seconds per byte, not bandwidth, in equal steps from fast to slow
+by mid-run and back, so transfer time changes by the same amount every
+request. It uses one prefix size and no startup so drift is the only
+variable.
