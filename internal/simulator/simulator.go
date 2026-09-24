@@ -60,7 +60,10 @@ func ActualTTFT(truth Scenario, action scheduler.Action) (time.Duration, error) 
 	if err != nil {
 		return 0, err
 	}
+	return ttftOf(candidates, action)
+}
 
+func ttftOf(candidates []scheduler.Candidate, action scheduler.Action) (time.Duration, error) {
 	for _, candidate := range candidates {
 		if candidate.Action == action {
 			return candidate.EstimatedTTFT, nil
@@ -125,6 +128,11 @@ type Outcome struct {
 	// Believed is the action the policy's own estimates ranked best. It
 	// differs from the executed action only when a probe forces a transfer.
 	Believed scheduler.Action
+	// Executed is the action that actually ran.
+	Executed scheduler.Action
+	// Predicted is the policy's estimated TTFT for Executed; Actual is what
+	// it really took.
+	Predicted, Actual time.Duration
 }
 
 // RunStatic scores a sequence of true scenarios against one belief that never
@@ -138,11 +146,10 @@ func RunStatic(belief Scenario, truths []Scenario) ([]Outcome, error) {
 
 	outcomes := make([]Outcome, len(truths))
 	for i, truth := range truths {
-		regret, err := Regret(truth, choice.Action)
+		outcomes[i], err = record(belief, truth, choice.Action, choice.Action)
 		if err != nil {
 			return nil, err
 		}
-		outcomes[i] = Outcome{Regret: regret, Believed: choice.Action}
 	}
 	return outcomes, nil
 }
@@ -185,11 +192,10 @@ func RunAdaptive(
 		if probeEvery > 0 && sinceTransfer >= probeEvery {
 			action = scheduler.ActionTransfer
 		}
-		regret, err := Regret(truth, action)
+		outcomes[i], err = record(belief, truth, choice.Action, action)
 		if err != nil {
 			return nil, err
 		}
-		outcomes[i] = Outcome{Regret: regret, Believed: choice.Action}
 
 		sinceTransfer++
 		if action == scheduler.ActionTransfer {
@@ -206,6 +212,34 @@ func RunAdaptive(
 		}
 	}
 	return outcomes, nil
+}
+
+// record scores one request where the policy, holding belief, ranked
+// believed best but ran executed.
+func record(belief, truth Scenario, believed, executed scheduler.Action) (Outcome, error) {
+	predictions, err := estimate(belief)
+	if err != nil {
+		return Outcome{}, err
+	}
+	predicted, err := ttftOf(predictions, executed)
+	if err != nil {
+		return Outcome{}, err
+	}
+	actual, err := ActualTTFT(truth, executed)
+	if err != nil {
+		return Outcome{}, err
+	}
+	regret, err := Regret(truth, executed)
+	if err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{
+		Regret:    regret,
+		Believed:  believed,
+		Executed:  executed,
+		Predicted: predicted,
+		Actual:    actual,
+	}, nil
 }
 
 // NoisyObserve returns an observe function for RunAdaptive that scales each

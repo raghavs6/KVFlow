@@ -509,3 +509,69 @@ func TestRunAdaptiveLearnsHiddenStartup(t *testing.T) {
 		}
 	}
 }
+
+func TestRunAdaptiveRecordsPredictedAndActual(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+	const ms = time.Millisecond
+
+	tests := []struct {
+		name       string
+		probeEvery int
+		truths     []Scenario
+		index      int
+		want       Outcome
+	}{
+		{
+			name:   "hidden startup makes the first transfer underpredict",
+			truths: Stable(2, withStartup(900*ms)),
+			index:  0,
+			want:   Outcome{Regret: 50 * ms, Believed: scheduler.ActionTransfer, Executed: scheduler.ActionTransfer, Predicted: 220 * ms, Actual: 1120 * ms},
+		},
+		{
+			name:   "one report raises the next prediction",
+			truths: Stable(2, withStartup(900*ms)),
+			index:  1,
+			want:   Outcome{Regret: 50 * ms, Believed: scheduler.ActionTransfer, Executed: scheduler.ActionTransfer, Predicted: 670 * ms, Actual: 1120 * ms},
+		},
+		{
+			// The belief is 5.5e-10 s/B after one congested report, so
+			// the probe's transfer is predicted at 1120ms but the network
+			// has recovered.
+			name:       "a probe predicts the transfer it executes",
+			probeEvery: 2,
+			truths:     []Scenario{fast, fast, congested, congested, fast, fast},
+			index:      5,
+			want:       Outcome{Regret: 0, Believed: scheduler.ActionWait, Executed: scheduler.ActionTransfer, Predicted: 1120 * ms, Actual: 220 * ms},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunAdaptive(10_000_000_000, 0.5, tt.probeEvery, exact, tt.truths)
+			if err != nil {
+				t.Fatalf("RunAdaptive() error = %v", err)
+			}
+			if got[tt.index] != tt.want {
+				t.Errorf("RunAdaptive()[%d] = %+v, want %+v", tt.index, got[tt.index], tt.want)
+			}
+		})
+	}
+}
+
+func TestRunStaticRecordsPredictedAndActual(t *testing.T) {
+	got, err := RunStatic(withStartup(0), []Scenario{withStartup(900 * time.Millisecond)})
+	if err != nil {
+		t.Fatalf("RunStatic() error = %v", err)
+	}
+	want := Outcome{
+		Regret:    50 * time.Millisecond,
+		Believed:  scheduler.ActionTransfer,
+		Executed:  scheduler.ActionTransfer,
+		Predicted: 220 * time.Millisecond,
+		Actual:    1120 * time.Millisecond,
+	}
+	if got[0] != want {
+		t.Errorf("RunStatic()[0] = %+v, want %+v", got[0], want)
+	}
+}

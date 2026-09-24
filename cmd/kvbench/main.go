@@ -131,6 +131,32 @@ func main() {
 		fmt.Fprintln(w)
 	}
 	w.Flush()
+
+	fmt.Println("\nMean transfer underprediction (ms): actual − predicted TTFT over executed transfers")
+	fmt.Println()
+	w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprint(w, "policy\t")
+	for _, wl := range workloads {
+		fmt.Fprintf(w, "%s\t", wl.name)
+	}
+	fmt.Fprintln(w)
+
+	for _, p := range policies {
+		fmt.Fprintf(w, "%s\t", p.name)
+		for _, wl := range workloads {
+			mean, transferred, err := meanTransferErrorMs(p, wl.truths)
+			if err != nil {
+				log.Fatalf("%s on %s: %v", p.name, wl.name, err)
+			}
+			if transferred {
+				fmt.Fprintf(w, "%.1f\t", mean)
+			} else {
+				fmt.Fprint(w, "—\t")
+			}
+		}
+		fmt.Fprintln(w)
+	}
+	w.Flush()
 }
 
 // meanRegretMs averages regret over every request of every seed.
@@ -174,6 +200,31 @@ func meanAdaptation(p policy, truths []simulator.Scenario, to scheduler.Action) 
 		}
 	}
 	return float64(total) / float64(count), true, nil
+}
+
+// meanTransferErrorMs averages actual minus predicted TTFT over every executed
+// transfer of every seed. Only transfers are counted because the other
+// actions' inputs are reported fresh and can't be mispredicted. transferred
+// is false if the policy never transferred.
+func meanTransferErrorMs(p policy, truths []simulator.Scenario) (mean float64, transferred bool, err error) {
+	var total time.Duration
+	count := 0
+	for seed := range uint64(seeds) {
+		outcomes, err := p.run(truths, seed)
+		if err != nil {
+			return 0, false, err
+		}
+		for _, o := range outcomes {
+			if o.Executed == scheduler.ActionTransfer {
+				total += o.Actual - o.Predicted
+				count++
+			}
+		}
+	}
+	if count == 0 {
+		return 0, false, nil
+	}
+	return float64(total) / float64(time.Millisecond) / float64(count), true, nil
 }
 
 func scenario(bandwidth float64) simulator.Scenario {
