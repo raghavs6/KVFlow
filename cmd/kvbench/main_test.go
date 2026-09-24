@@ -31,3 +31,37 @@ func TestScenarioBestActions(t *testing.T) {
 		})
 	}
 }
+
+// With the hidden startup, the model still predicts transfer for every
+// prefix size, but recompute is truly best for small prefixes. No single
+// learned bandwidth can make both choices correct.
+func TestMixedPrefixBestActions(t *testing.T) {
+	tests := []struct {
+		prefixTokens int
+		wantTrue     scheduler.Action
+	}{
+		{prefixTokens: smallPrefixTokens, wantTrue: scheduler.ActionRecompute},
+		{prefixTokens: prefixTokens, wantTrue: scheduler.ActionTransfer},
+	}
+
+	for _, tt := range tests {
+		s := startupScenario()
+		s.Request.PrefixTokens = tt.prefixTokens
+
+		predicted, err := simulator.Decide(s)
+		if err != nil {
+			t.Fatalf("Decide() error = %v", err)
+		}
+		if predicted.Action != scheduler.ActionTransfer {
+			t.Errorf("prefix %d: Decide() = %s, want transfer", tt.prefixTokens, predicted.Action)
+		}
+		// The truly best action has zero regret.
+		regret, err := simulator.Regret(s, tt.wantTrue)
+		if err != nil {
+			t.Fatalf("Regret() error = %v", err)
+		}
+		if regret != 0 {
+			t.Errorf("prefix %d: Regret(%s) = %v, want 0", tt.prefixTokens, tt.wantTrue, regret)
+		}
+	}
+}

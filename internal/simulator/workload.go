@@ -5,7 +5,10 @@ import (
 	"math/rand/v2"
 )
 
-var errInvalidPeriod = errors.New("periods must satisfy 0 < minPeriod <= maxPeriod")
+var (
+	errInvalidPeriod = errors.New("periods must satisfy 0 < minPeriod <= maxPeriod")
+	errNoPrefixSizes = errors.New("at least one prefix size is required")
+)
 
 // Stable returns n copies of scenario: conditions never change.
 func Stable(n int, scenario Scenario) []Scenario {
@@ -47,6 +50,21 @@ func Flapping(rng *rand.Rand, n, minPeriod, maxPeriod int, fast, slow Scenario) 
 		}
 		isSlow = !isSlow
 		start = end
+	}
+	return truths, nil
+}
+
+// MixedPrefixes returns n copies of scenario whose prefix size is drawn
+// uniformly from prefixTokens for each request. Equal rng seeds give equal
+// workloads.
+func MixedPrefixes(rng *rand.Rand, n int, scenario Scenario, prefixTokens []int) ([]Scenario, error) {
+	if len(prefixTokens) == 0 {
+		return nil, errNoPrefixSizes
+	}
+
+	truths := Stable(n, scenario)
+	for i := range truths {
+		truths[i].Request.PrefixTokens = prefixTokens[rng.IntN(len(prefixTokens))]
 	}
 	return truths, nil
 }

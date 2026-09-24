@@ -97,3 +97,45 @@ func TestFlappingRejectsInvalidPeriods(t *testing.T) {
 		}
 	}
 }
+
+func TestMixedPrefixes(t *testing.T) {
+	base := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	sizes := []int{2_000, 50_000}
+
+	first, err := MixedPrefixes(rand.New(rand.NewPCG(1, 2)), 200, base, sizes)
+	if err != nil {
+		t.Fatalf("MixedPrefixes() error = %v", err)
+	}
+	second, err := MixedPrefixes(rand.New(rand.NewPCG(1, 2)), 200, base, sizes)
+	if err != nil {
+		t.Fatalf("MixedPrefixes() error = %v", err)
+	}
+
+	counts := map[int]int{}
+	for i, s := range first {
+		if s != second[i] {
+			t.Fatalf("scenario %d differs between runs with the same seed", i)
+		}
+		counts[s.Request.PrefixTokens]++
+		s.Request.PrefixTokens = base.Request.PrefixTokens
+		if s != base {
+			t.Fatalf("scenario %d changed more than the prefix size", i)
+		}
+	}
+	if len(counts) != len(sizes) {
+		t.Errorf("prefix size counts = %v, want every size of %v and nothing else", counts, sizes)
+	}
+	for _, size := range sizes {
+		if counts[size] == 0 {
+			t.Errorf("prefix size %d never drawn", size)
+		}
+	}
+}
+
+func TestMixedPrefixesRejectsNoSizes(t *testing.T) {
+	base := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+
+	if _, err := MixedPrefixes(rand.New(rand.NewPCG(1, 2)), 4, base, nil); err == nil {
+		t.Fatal("MixedPrefixes(no sizes) error = nil, want an error")
+	}
+}

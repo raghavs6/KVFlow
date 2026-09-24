@@ -15,20 +15,24 @@ import (
 )
 
 const (
-	requests       = 2000
-	flapMinPeriod  = 150
-	flapMaxPeriod  = 250
-	workloadSeed   = 1
-	seeds          = 20
-	noiseSpread    = 0.3
-	fastBandwidth  = 10_000_000_000
-	slowBandwidth  = 1_000_000_000
-	sourceQueue    = 1500 * time.Millisecond
-	destQueue      = 50 * time.Millisecond
-	prefixTokens   = 50_000
-	suffixTokens   = 1_000
-	prefillRate    = 50_000
-	kvBytesPerTokn = 40_000
+	requests      = 2000
+	flapMinPeriod = 150
+	flapMaxPeriod = 250
+	workloadSeed  = 1
+	seeds         = 20
+	noiseSpread   = 0.3
+	fastBandwidth = 10_000_000_000
+	slowBandwidth = 1_000_000_000
+	sourceQueue   = 1500 * time.Millisecond
+	destQueue     = 50 * time.Millisecond
+	prefixTokens  = 50_000
+	// Only the startup workloads use these. The simulated truth pays the
+	// startup on every transfer; the cost model can't see it.
+	transferStartup   = 200 * time.Millisecond
+	smallPrefixTokens = 2_000
+	suffixTokens      = 1_000
+	prefillRate       = 50_000
+	kvBytesPerTokn    = 40_000
 )
 
 type workload struct {
@@ -55,10 +59,19 @@ func main() {
 		{"slowdown+recovery", simulator.SlowdownThenRecovery(requests, fast, slow)},
 		{"flapping", flapping},
 	}
+	mixed, err := simulator.MixedPrefixes(
+		rand.New(rand.NewPCG(workloadSeed, workloadSeed)), requests, startupScenario(), []int{smallPrefixTokens, prefixTokens})
+	if err != nil {
+		log.Fatal(err)
+	}
 	workloads := append([]workload{
 		{"stable-fast", simulator.Stable(requests, fast)},
 		{"stable-slow", simulator.Stable(requests, slow)},
 	}, changing...)
+	workloads = append(workloads,
+		workload{"startup", simulator.Stable(requests, startupScenario())},
+		workload{"startup+mixed", mixed},
+	)
 
 	policies := []policy{{
 		name: "static",
@@ -225,6 +238,13 @@ func meanTransferErrorMs(p policy, truths []simulator.Scenario) (mean float64, t
 		return 0, false, nil
 	}
 	return float64(total) / float64(time.Millisecond) / float64(count), true, nil
+}
+
+// startupScenario is a fast network whose transfers pay a hidden startup.
+func startupScenario() simulator.Scenario {
+	s := scenario(fastBandwidth)
+	s.TransferStartup = transferStartup
+	return s
 }
 
 func scenario(bandwidth float64) simulator.Scenario {
