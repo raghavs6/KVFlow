@@ -135,17 +135,20 @@ type Outcome struct {
 	Predicted, Actual time.Duration
 }
 
-// RunStatic scores a sequence of true scenarios against one belief that never
-// updates, like a cost model calibrated once at startup. It returns the
-// outcome of each request in order.
-func RunStatic(belief Scenario, truths []Scenario) ([]Outcome, error) {
-	choice, err := Decide(belief)
-	if err != nil {
-		return nil, err
-	}
-
+// RunStatic scores a sequence of true scenarios with a bandwidth measured once
+// at startup and never updated, like an offline cost model. Queues and the
+// request are taken fresh from each scenario, as for RunAdaptive, so only the
+// bandwidth is frozen. It returns the outcome of each request in order.
+func RunStatic(bandwidth float64, truths []Scenario) ([]Outcome, error) {
 	outcomes := make([]Outcome, len(truths))
 	for i, truth := range truths {
+		belief := truth
+		belief.BandwidthBytesPerSec = bandwidth
+
+		choice, err := Decide(belief)
+		if err != nil {
+			return nil, err
+		}
 		outcomes[i], err = record(belief, truth, choice.Action, choice.Action)
 		if err != nil {
 			return nil, err

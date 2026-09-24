@@ -136,7 +136,7 @@ func TestRunStaticKeepsPayingAfterCongestion(t *testing.T) {
 	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
 	truths := []Scenario{fast, fast, fast, congested, congested, congested}
 
-	got, err := RunStatic(fast, truths)
+	got, err := RunStatic(fast.BandwidthBytesPerSec, truths)
 	if err != nil {
 		t.Fatalf("RunStatic() error = %v", err)
 	}
@@ -155,7 +155,7 @@ func TestRunStaticKeepsPayingAfterCongestion(t *testing.T) {
 func TestRunStaticEmptySequence(t *testing.T) {
 	belief := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
 
-	got, err := RunStatic(belief, nil)
+	got, err := RunStatic(belief.BandwidthBytesPerSec, nil)
 	if err != nil {
 		t.Fatalf("RunStatic() error = %v", err)
 	}
@@ -169,7 +169,7 @@ func TestRunStaticRejectsInvalidTruth(t *testing.T) {
 	invalid := belief
 	invalid.BandwidthBytesPerSec = 0
 
-	if _, err := RunStatic(belief, []Scenario{belief, invalid}); err == nil {
+	if _, err := RunStatic(belief.BandwidthBytesPerSec, []Scenario{belief, invalid}); err == nil {
 		t.Fatal("RunStatic() error = nil, want an invalid-input error")
 	}
 }
@@ -331,7 +331,7 @@ func TestRunStaticBelievesOneAction(t *testing.T) {
 	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
 	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
 
-	outcomes, err := RunStatic(fast, []Scenario{fast, congested})
+	outcomes, err := RunStatic(fast.BandwidthBytesPerSec, []Scenario{fast, congested})
 	if err != nil {
 		t.Fatalf("RunStatic() error = %v", err)
 	}
@@ -560,7 +560,7 @@ func TestRunAdaptiveRecordsPredictedAndActual(t *testing.T) {
 }
 
 func TestRunStaticRecordsPredictedAndActual(t *testing.T) {
-	got, err := RunStatic(withStartup(0), []Scenario{withStartup(900 * time.Millisecond)})
+	got, err := RunStatic(10_000_000_000, []Scenario{withStartup(900 * time.Millisecond)})
 	if err != nil {
 		t.Fatalf("RunStatic() error = %v", err)
 	}
@@ -570,6 +570,29 @@ func TestRunStaticRecordsPredictedAndActual(t *testing.T) {
 		Executed:  scheduler.ActionTransfer,
 		Predicted: 220 * time.Millisecond,
 		Actual:    1120 * time.Millisecond,
+	}
+	if got[0] != want {
+		t.Errorf("RunStatic()[0] = %+v, want %+v", got[0], want)
+	}
+}
+
+// Static keeps its calibrated bandwidth but reads each request's own size
+// and queues, so a 2k-token transfer is predicted at max(50ms, 8ms) + 20ms.
+func TestRunStaticUsesEachRequest(t *testing.T) {
+	small := withStartup(200 * time.Millisecond)
+	small.Request.PrefixTokens = 2_000
+
+	got, err := RunStatic(10_000_000_000, []Scenario{small})
+	if err != nil {
+		t.Fatalf("RunStatic() error = %v", err)
+	}
+	// True costs: transfer max(50ms, 208ms) + 20ms = 228ms, recompute 110ms.
+	want := Outcome{
+		Regret:    118 * time.Millisecond,
+		Believed:  scheduler.ActionTransfer,
+		Executed:  scheduler.ActionTransfer,
+		Predicted: 70 * time.Millisecond,
+		Actual:    228 * time.Millisecond,
 	}
 	if got[0] != want {
 		t.Errorf("RunStatic()[0] = %+v, want %+v", got[0], want)

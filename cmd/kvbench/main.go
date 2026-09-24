@@ -76,7 +76,7 @@ func main() {
 	policies := []policy{{
 		name: "static",
 		run: func(truths []simulator.Scenario, _ uint64) ([]simulator.Outcome, error) {
-			return simulator.RunStatic(fast, truths)
+			return simulator.RunStatic(fastBandwidth, truths)
 		},
 	}}
 	for _, alpha := range []float64{0.1, 0.5} {
