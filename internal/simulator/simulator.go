@@ -36,6 +36,10 @@ type Scenario struct {
 	Request              Request
 	KVBytesPerToken      float64
 	BandwidthBytesPerSec float64
+	// TransferStartup is a fixed delay paid by every transfer, such as
+	// connection setup. Only the simulated truth pays it; the cost model has
+	// no term for it, so predictions ignore it.
+	TransferStartup time.Duration
 }
 
 // Decide predicts each feasible plan and returns the one with the lowest TTFT.
@@ -49,10 +53,10 @@ func Decide(scenario Scenario) (scheduler.Candidate, error) {
 }
 
 // ActualTTFT returns how long action really takes under the true scenario.
-// Truth reuses the cost model's formula, so the only way a decision can be
-// wrong is that it was made from a stale belief about the scenario.
+// Truth is the cost model's formula plus TransferStartup, so a decision can be
+// wrong because its belief was stale or because the model's formula is.
 func ActualTTFT(truth Scenario, action scheduler.Action) (time.Duration, error) {
-	candidates, err := estimate(truth)
+	candidates, err := actualCosts(truth)
 	if err != nil {
 		return 0, err
 	}
@@ -73,11 +77,45 @@ func Regret(truth Scenario, chosen scheduler.Action) (time.Duration, error) {
 		return 0, err
 	}
 
-	best, err := Decide(truth)
+	best, err := bestActual(truth)
 	if err != nil {
 		return 0, err
 	}
 	return actual - best.EstimatedTTFT, nil
+}
+
+// bestActual returns the action a scheduler with perfect knowledge of truth,
+// including costs the model cannot see, would choose.
+func bestActual(truth Scenario) (scheduler.Candidate, error) {
+	candidates, err := actualCosts(truth)
+	if err != nil {
+		return scheduler.Candidate{}, err
+	}
+	return scheduler.ChooseLowestTTFT(candidates)
+}
+
+// actualCosts returns every action's true TTFT. It matches the cost model
+// except that the transfer also pays TransferStartup, which overlaps the
+// destination queue like the transfer itself.
+func actualCosts(truth Scenario) ([]scheduler.Candidate, error) {
+	candidates, err := estimate(truth)
+	if err != nil {
+		return nil, err
+	}
+
+	suffix := time.Duration(float64(truth.Request.SuffixTokens) / truth.Destination.PrefillTokensPerSec * float64(time.Second))
+	for i := range candidates {
+		if candidates[i].Action == scheduler.ActionTransfer {
+			candidates[i].EstimatedTTFT = max(truth.Destination.Queue, transferDuration(truth)) + suffix
+		}
+	}
+	return candidates, nil
+}
+
+// transferDuration is how long moving the prefix's KV really takes.
+func transferDuration(truth Scenario) time.Duration {
+	bytes := float64(truth.Request.PrefixTokens) * truth.KVBytesPerToken
+	return truth.TransferStartup + time.Duration(bytes/truth.BandwidthBytesPerSec*float64(time.Second))
 }
 
 // Outcome records one request of a run.

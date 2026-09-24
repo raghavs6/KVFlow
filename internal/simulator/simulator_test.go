@@ -431,3 +431,57 @@ func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64
 		BandwidthBytesPerSec: bandwidth,
 	}
 }
+
+// withStartup returns a fast-network scenario whose transfers pay a startup
+// delay the cost model cannot see. With a 1 s delay the true costs are wait
+// 1520ms, transfer 1220ms, recompute 1070ms, while the model still predicts
+// transfer at 220ms.
+func withStartup(startup time.Duration) Scenario {
+	s := baseScenario(1500*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	s.TransferStartup = startup
+	return s
+}
+
+func TestHiddenStartupAffectsTruthNotPrediction(t *testing.T) {
+	truth := withStartup(time.Second)
+
+	choice, err := Decide(truth)
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if choice.Action != scheduler.ActionTransfer || choice.EstimatedTTFT != 220*time.Millisecond {
+		t.Fatalf("Decide() = %+v, want transfer predicted at 220ms", choice)
+	}
+
+	actual, err := ActualTTFT(truth, scheduler.ActionTransfer)
+	if err != nil {
+		t.Fatalf("ActualTTFT() error = %v", err)
+	}
+	if want := 1220 * time.Millisecond; actual != want {
+		t.Errorf("ActualTTFT(transfer) = %v, want %v", actual, want)
+	}
+
+	regret, err := Regret(truth, scheduler.ActionTransfer)
+	if err != nil {
+		t.Fatalf("Regret() error = %v", err)
+	}
+	if want := 150 * time.Millisecond; regret != want {
+		t.Errorf("Regret(transfer) = %v, want %v against recompute", regret, want)
+	}
+}
+
+// Startup overlaps the destination queue just like the transfer itself.
+func TestHiddenStartupOverlapsDestinationQueue(t *testing.T) {
+	truth := withStartup(0)
+	truth.Destination.Queue = 500 * time.Millisecond
+	truth.TransferStartup = 100 * time.Millisecond
+
+	actual, err := ActualTTFT(truth, scheduler.ActionTransfer)
+	if err != nil {
+		t.Fatalf("ActualTTFT() error = %v", err)
+	}
+	// max(500ms queue, 100ms + 200ms transfer) + 20ms suffix.
+	if want := 520 * time.Millisecond; actual != want {
+		t.Errorf("ActualTTFT(transfer) = %v, want %v", actual, want)
+	}
+}

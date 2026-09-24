@@ -94,3 +94,22 @@ func TestAdaptationTimesRejectsLengthMismatch(t *testing.T) {
 		t.Fatal("AdaptationTimes() error = nil, want a length-mismatch error")
 	}
 }
+
+// The best action comes from true costs, so a hidden startup delay that
+// makes recompute best is a change point even though the model can't see it.
+func TestAdaptationTimesUseTrueCosts(t *testing.T) {
+	truths := []Scenario{withStartup(0), withStartup(time.Second)}
+	outcomes := []Outcome{
+		{Believed: scheduler.ActionTransfer},
+		{Believed: scheduler.ActionTransfer},
+	}
+
+	got, err := AdaptationTimes(truths, outcomes)
+	if err != nil {
+		t.Fatalf("AdaptationTimes() error = %v", err)
+	}
+	want := Adaptation{At: 1, From: scheduler.ActionTransfer, To: scheduler.ActionRecompute, Adapted: false}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("AdaptationTimes() = %+v, want [%+v]", got, want)
+	}
+}

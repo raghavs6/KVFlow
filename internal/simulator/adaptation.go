@@ -22,7 +22,7 @@ type Adaptation struct {
 	Adapted bool
 }
 
-// AdaptationTimes finds every change point in truths and measures how long
+// AdaptationTimes finds every change point in the true best action of truths and measures how long
 // the policy that produced outcomes took to believe the new best action.
 // Belief is used rather than the executed action so forced probes do not
 // count as adapting.
@@ -33,7 +33,7 @@ func AdaptationTimes(truths []Scenario, outcomes []Outcome) ([]Adaptation, error
 
 	best := make([]scheduler.Action, len(truths))
 	for i, truth := range truths {
-		choice, err := Decide(truth)
+		choice, err := bestActual(truth)
 		if err != nil {
 			return nil, err
 		}
