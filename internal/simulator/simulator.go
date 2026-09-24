@@ -37,14 +37,15 @@ type Scenario struct {
 	KVBytesPerToken      float64
 	BandwidthBytesPerSec float64
 	// TransferStartup is a fixed delay paid by every transfer, such as
-	// connection setup. Only the simulated truth pays it; the cost model has
-	// no term for it, so predictions ignore it.
+	// connection setup. It is part of the truth only: policies are never
+	// told it, and predict with their own startup estimate instead.
 	TransferStartup time.Duration
 }
 
 // Decide predicts each feasible plan and returns the one with the lowest TTFT.
+// It assumes transfers have no startup.
 func Decide(scenario Scenario) (scheduler.Candidate, error) {
-	candidates, err := estimate(scenario)
+	candidates, err := estimate(scenario, 0)
 	if err != nil {
 		return scheduler.Candidate{}, err
 	}
@@ -53,8 +54,8 @@ func Decide(scenario Scenario) (scheduler.Candidate, error) {
 }
 
 // ActualTTFT returns how long action really takes under the true scenario.
-// Truth is the cost model's formula plus TransferStartup, so a decision can be
-// wrong because its belief was stale or because the model's formula is.
+// Truth is the cost model's formula with the true TransferStartup, so a
+// decision can be wrong because its bandwidth or startup belief is.
 func ActualTTFT(truth Scenario, action scheduler.Action) (time.Duration, error) {
 	candidates, err := actualCosts(truth)
 	if err != nil {
@@ -97,22 +98,9 @@ func bestActual(truth Scenario) (scheduler.Candidate, error) {
 	return scheduler.ChooseLowestTTFT(candidates)
 }
 
-// actualCosts returns every action's true TTFT. It matches the cost model
-// except that the transfer also pays TransferStartup, which overlaps the
-// destination queue like the transfer itself.
+// actualCosts returns every action's true TTFT, startup included.
 func actualCosts(truth Scenario) ([]scheduler.Candidate, error) {
-	candidates, err := estimate(truth)
-	if err != nil {
-		return nil, err
-	}
-
-	suffix := time.Duration(float64(truth.Request.SuffixTokens) / truth.Destination.PrefillTokensPerSec * float64(time.Second))
-	for i := range candidates {
-		if candidates[i].Action == scheduler.ActionTransfer {
-			candidates[i].EstimatedTTFT = max(truth.Destination.Queue, transferDuration(truth)) + suffix
-		}
-	}
-	return candidates, nil
+	return estimate(truth, truth.TransferStartup)
 }
 
 // transferDuration is how long moving the prefix's KV really takes.
@@ -220,7 +208,7 @@ func RunAdaptive(
 // record scores one request where the policy, holding belief, ranked
 // believed best but ran executed.
 func record(belief, truth Scenario, believed, executed scheduler.Action) (Outcome, error) {
-	predictions, err := estimate(belief)
+	predictions, err := estimate(belief, 0)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -259,7 +247,9 @@ func NoisyObserve(rng *rand.Rand, spread float64) (func(float64) float64, error)
 	}, nil
 }
 
-func estimate(scenario Scenario) ([]scheduler.Candidate, error) {
+// estimate runs the cost model on scenario with the given startup, which is
+// passed separately so a belief can never pick up the truth's startup.
+func estimate(scenario Scenario, startup time.Duration) ([]scheduler.Candidate, error) {
 	return costmodel.Estimate(costmodel.Inputs{
 		QueueA:               scenario.Source.Queue,
 		QueueB:               scenario.Destination.Queue,
@@ -269,5 +259,6 @@ func estimate(scenario Scenario) ([]scheduler.Candidate, error) {
 		PrefillTokensPerSecB: scenario.Destination.PrefillTokensPerSec,
 		KVBytesPerToken:      scenario.KVBytesPerToken,
 		BandwidthBytesPerSec: scenario.BandwidthBytesPerSec,
+		TransferStartup:      startup,
 	})
 }

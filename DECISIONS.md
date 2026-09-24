@@ -22,11 +22,11 @@ means wait wins a three-way tie and transfer wins a tie with recompute.
 The model uses these time-to-first-token estimates:
 
 - `wait = QueueA + SuffixTokens / PrefillTokensPerSecA`
-- `transfer = max(QueueB, PrefixTokens * KVBytesPerToken / BandwidthBytesPerSec) + SuffixTokens / PrefillTokensPerSecB`
+- `transfer = max(QueueB, TransferStartup + PrefixTokens * KVBytesPerToken / BandwidthBytesPerSec) + SuffixTokens / PrefillTokensPerSecB`
 - `recompute = QueueB + (PrefixTokens + SuffixTokens) / PrefillTokensPerSecB`
 
-Transfer time overlaps Worker B's queue because receiving KV data does not use
-B's GPU. Recompute does use B's GPU, so its prefix work starts only after B's
+Transfer time, including its fixed startup (such as connection setup),
+overlaps Worker B's queue because receiving KV data does not use B's GPU. Recompute does use B's GPU, so its prefix work starts only after B's
 queue drains and the two times are added. First-token decode time is omitted
 because it is the same for every candidate and cannot change their ordering.
 

@@ -17,11 +17,14 @@ type Inputs struct {
 	PrefixTokens, SuffixTokens                 int
 	PrefillTokensPerSecA, PrefillTokensPerSecB float64
 	KVBytesPerToken, BandwidthBytesPerSec      float64
+	// TransferStartup is a fixed delay every transfer pays before bytes
+	// flow, such as connection setup.
+	TransferStartup time.Duration
 }
 
 // Estimate returns wait, transfer, and recompute candidates in tie-break order.
 func Estimate(inputs Inputs) ([]scheduler.Candidate, error) {
-	if inputs.QueueA < 0 || inputs.QueueB < 0 ||
+	if inputs.QueueA < 0 || inputs.QueueB < 0 || inputs.TransferStartup < 0 ||
 		inputs.PrefixTokens < 0 || inputs.SuffixTokens < 0 ||
 		!isFinitePositive(inputs.PrefillTokensPerSecA) ||
 		!isFinitePositive(inputs.PrefillTokensPerSecB) ||
@@ -32,7 +35,7 @@ func Estimate(inputs Inputs) ([]scheduler.Candidate, error) {
 
 	suffixA := durationFor(float64(inputs.SuffixTokens), inputs.PrefillTokensPerSecA)
 	suffixB := durationFor(float64(inputs.SuffixTokens), inputs.PrefillTokensPerSecB)
-	transferTime := durationFor(
+	transferTime := inputs.TransferStartup + durationFor(
 		float64(inputs.PrefixTokens)*inputs.KVBytesPerToken,
 		inputs.BandwidthBytesPerSec,
 	)

@@ -54,6 +54,31 @@ func TestEstimate(t *testing.T) {
 			},
 		},
 		{
+			name: "startup adds to transfer time",
+			inputs: withStartup(
+				baseInputs(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000),
+				200*time.Millisecond,
+			),
+			want: []scheduler.Candidate{
+				{Action: scheduler.ActionWait, EstimatedTTFT: 420 * time.Millisecond},
+				{Action: scheduler.ActionTransfer, EstimatedTTFT: 420 * time.Millisecond},
+				{Action: scheduler.ActionRecompute, EstimatedTTFT: 1070 * time.Millisecond},
+			},
+		},
+		{
+			// max(500ms queue, 100ms startup + 200ms transfer) + 20ms.
+			name: "destination queue overlaps startup and transfer",
+			inputs: withStartup(
+				baseInputs(400*time.Millisecond, 500*time.Millisecond, 10_000_000_000),
+				100*time.Millisecond,
+			),
+			want: []scheduler.Candidate{
+				{Action: scheduler.ActionWait, EstimatedTTFT: 420 * time.Millisecond},
+				{Action: scheduler.ActionTransfer, EstimatedTTFT: 520 * time.Millisecond},
+				{Action: scheduler.ActionRecompute, EstimatedTTFT: 1520 * time.Millisecond},
+			},
+		},
+		{
 			name: "exact tie keeps wait first",
 			inputs: Inputs{
 				PrefixTokens:         0,
@@ -96,6 +121,7 @@ func TestEstimateRejectsInvalidInputs(t *testing.T) {
 	}{
 		{name: "negative queue A", mutate: func(in *Inputs) { in.QueueA = -time.Nanosecond }},
 		{name: "negative queue B", mutate: func(in *Inputs) { in.QueueB = -time.Nanosecond }},
+		{name: "negative transfer startup", mutate: func(in *Inputs) { in.TransferStartup = -time.Nanosecond }},
 		{name: "negative prefix tokens", mutate: func(in *Inputs) { in.PrefixTokens = -1 }},
 		{name: "negative suffix tokens", mutate: func(in *Inputs) { in.SuffixTokens = -1 }},
 		{name: "zero prefill rate A", mutate: func(in *Inputs) { in.PrefillTokensPerSecA = 0 }},
@@ -183,4 +209,9 @@ func baseInputs(queueA, queueB time.Duration, bandwidth float64) Inputs {
 		KVBytesPerToken:      40_000,
 		BandwidthBytesPerSec: bandwidth,
 	}
+}
+
+func withStartup(inputs Inputs, startup time.Duration) Inputs {
+	inputs.TransferStartup = startup
+	return inputs
 }
