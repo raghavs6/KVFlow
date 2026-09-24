@@ -59,6 +59,7 @@ func main() {
 	changing := []workload{
 		{"slowdown+recovery", simulator.SlowdownThenRecovery(requests, fast, slow)},
 		{"flapping", flapping},
+		{"drift", simulator.Drift(requests, fast, slow)},
 	}
 	mixed, err := simulator.MixedPrefixes(
 		rand.New(rand.NewPCG(workloadSeed, workloadSeed)), requests, startupScenario(), []int{smallPrefixTokens, prefixTokens})
