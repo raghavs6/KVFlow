@@ -2,6 +2,7 @@ package simulator
 
 import (
 	"errors"
+	"math"
 	"math/rand/v2"
 )
 
@@ -67,4 +68,25 @@ func MixedPrefixes(rng *rand.Rand, n int, scenario Scenario, prefixTokens []int)
 		truths[i].Request.PrefixTokens = prefixTokens[rng.IntN(len(prefixTokens))]
 	}
 	return truths, nil
+}
+
+// Drift returns n copies of fast whose bandwidth drifts to slow's by the
+// middle of the run and back to fast's by the end. Seconds per byte changes
+// by the same amount each request, so transfer time rises and falls steadily,
+// like a link that gradually congests and then clears.
+func Drift(n int, fast, slow Scenario) []Scenario {
+	truths := Stable(n, fast)
+	if n < 2 {
+		return truths
+	}
+
+	fastSPB := 1 / fast.BandwidthBytesPerSec
+	slowSPB := 1 / slow.BandwidthBytesPerSec
+	half := float64(n-1) / 2
+	for i := range truths {
+		// 0 at either end, 1 in the middle.
+		toSlow := 1 - math.Abs(float64(i)-half)/half
+		truths[i].BandwidthBytesPerSec = 1 / (fastSPB + toSlow*(slowSPB-fastSPB))
+	}
+	return truths
 }

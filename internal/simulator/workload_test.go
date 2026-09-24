@@ -1,6 +1,7 @@
 package simulator
 
 import (
+	"math"
 	"math/rand/v2"
 	"testing"
 	"time"
@@ -137,5 +138,40 @@ func TestMixedPrefixesRejectsNoSizes(t *testing.T) {
 
 	if _, err := MixedPrefixes(rand.New(rand.NewPCG(1, 2)), 4, base, nil); err == nil {
 		t.Fatal("MixedPrefixes(no sizes) error = nil, want an error")
+	}
+}
+
+func TestDrift(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	slow := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+
+	got := Drift(5, fast, slow)
+
+	// Seconds per byte moves in equal steps from fast to slow and back.
+	want := []float64{1e-10, 5.5e-10, 1e-9, 5.5e-10, 1e-10}
+	if len(got) != len(want) {
+		t.Fatalf("Drift() returned %d scenarios, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if spb := 1 / got[i].BandwidthBytesPerSec; math.Abs(spb-want[i]) > 1e-9*want[i] {
+			t.Errorf("scenario %d seconds per byte = %g, want %g", i, spb, want[i])
+		}
+		s := got[i]
+		s.BandwidthBytesPerSec = fast.BandwidthBytesPerSec
+		if s != fast {
+			t.Errorf("scenario %d changed more than bandwidth", i)
+		}
+	}
+}
+
+func TestDriftShortRuns(t *testing.T) {
+	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
+	slow := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
+
+	if got := Drift(0, fast, slow); len(got) != 0 {
+		t.Errorf("Drift(0) = %d scenarios, want 0", len(got))
+	}
+	if got := Drift(1, fast, slow); len(got) != 1 || got[0] != fast {
+		t.Errorf("Drift(1) = %+v, want [fast]", got)
 	}
 }
