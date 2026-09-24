@@ -12,7 +12,6 @@ import (
 
 var (
 	errUnknownAction = errors.New("unknown action")
-	errInvalidAlpha  = errors.New("alpha must be in (0, 1]")
 	errInvalidProbe  = errors.New("probeEvery must not be negative")
 	errInvalidSpread = errors.New("spread must be in [0, 1)")
 )
@@ -137,7 +136,7 @@ func RunStatic(bandwidth float64, truths []Scenario) ([]Outcome, error) {
 		if err != nil {
 			return nil, err
 		}
-		outcomes[i], err = record(belief, truth, choice.Action, choice.Action)
+		outcomes[i], err = record(belief, 0, truth, choice.Action, choice.Action)
 		if err != nil {
 			return nil, err
 		}
@@ -145,37 +144,44 @@ func RunStatic(bandwidth float64, truths []Scenario) ([]Outcome, error) {
 	return outcomes, nil
 }
 
-// RunAdaptive scores a sequence of true scenarios while learning bandwidth
-// from each executed transfer with an EWMA. Queues and prefill rates are
-// taken fresh from each scenario, as if reported by workers; only bandwidth
-// is learned. After probeEvery requests without a transfer, the next request
-// is forced to transfer so bandwidth is measured again; 0 disables probing.
-// observe turns a transfer's real duration per byte into what the worker
-// reports, which lets callers add measurement noise. It returns the outcome of
-// each request in order.
+// Learner turns observed transfers into a belief about transfer cost.
+type Learner interface {
+	// Observe adds one transfer of bytes (> 0) that took seconds.
+	Observe(bytes, seconds float64)
+	Startup() time.Duration
+	SecondsPerByte() float64
+}
+
+// RunAdaptive scores a sequence of true scenarios while l learns transfer
+// cost from each executed transfer. Queues and the request are taken fresh
+// from each scenario, as if reported by workers; only transfer cost is
+// learned. After probeEvery requests without a transfer, the next request is
+// forced to transfer so the network is measured again; 0 disables probing.
+// observe turns a transfer's real duration into what the worker reports,
+// which lets callers add measurement noise. It returns the outcome of each
+// request in order.
 func RunAdaptive(
-	initialBandwidth, alpha float64,
+	l Learner,
 	probeEvery int,
-	observe func(actualSecondsPerByte float64) float64,
+	observe func(actualSeconds float64) float64,
 	truths []Scenario,
 ) ([]Outcome, error) {
-	if !(alpha > 0 && alpha <= 1) {
-		return nil, errInvalidAlpha
-	}
 	if probeEvery < 0 {
 		return nil, errInvalidProbe
 	}
 
-	// Average seconds per byte rather than bytes per second: transfer time is
-	// linear in it, so the averaged estimate matches the average observed time.
-	secondsPerByte := 1 / initialBandwidth
 	sinceTransfer := 0
 	outcomes := make([]Outcome, len(truths))
 	for i, truth := range truths {
 		belief := truth
-		belief.BandwidthBytesPerSec = 1 / secondsPerByte
+		belief.BandwidthBytesPerSec = 1 / l.SecondsPerByte()
+		startup := l.Startup()
 
-		choice, err := Decide(belief)
+		candidates, err := estimate(belief, startup)
+		if err != nil {
+			return nil, err
+		}
+		choice, err := scheduler.ChooseLowestTTFT(candidates)
 		if err != nil {
 			return nil, err
 		}
@@ -183,7 +189,7 @@ func RunAdaptive(
 		if probeEvery > 0 && sinceTransfer >= probeEvery {
 			action = scheduler.ActionTransfer
 		}
-		outcomes[i], err = record(belief, truth, choice.Action, action)
+		outcomes[i], err = record(belief, startup, truth, choice.Action, action)
 		if err != nil {
 			return nil, err
 		}
@@ -191,24 +197,22 @@ func RunAdaptive(
 		sinceTransfer++
 		if action == scheduler.ActionTransfer {
 			sinceTransfer = 0
-			// The worker reports how long the transfer really took per byte,
-			// so costs the model has no term for, like startup, leak into
-			// what it learns. observe decides how far the report is from
-			// that. An empty transfer says nothing about bandwidth.
+			// The worker reports how long the transfer really took, so
+			// costs the model gets wrong, like an unlearned startup, leak
+			// into what it learns. An empty transfer says nothing.
 			bytes := float64(truth.Request.PrefixTokens) * truth.KVBytesPerToken
 			if bytes > 0 {
-				observed := observe(transferDuration(truth).Seconds() / bytes)
-				secondsPerByte = (1-alpha)*secondsPerByte + alpha*observed
+				l.Observe(bytes, observe(transferDuration(truth).Seconds()))
 			}
 		}
 	}
 	return outcomes, nil
 }
 
-// record scores one request where the policy, holding belief, ranked
-// believed best but ran executed.
-func record(belief, truth Scenario, believed, executed scheduler.Action) (Outcome, error) {
-	predictions, err := estimate(belief, 0)
+// record scores one request where the policy, holding belief and a startup
+// estimate, ranked believed best but ran executed.
+func record(belief Scenario, startup time.Duration, truth Scenario, believed, executed scheduler.Action) (Outcome, error) {
+	predictions, err := estimate(belief, startup)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -234,7 +238,7 @@ func record(belief, truth Scenario, believed, executed scheduler.Action) (Outcom
 }
 
 // NoisyObserve returns an observe function for RunAdaptive that scales each
-// actual seconds-per-byte by a uniform factor in [1-spread, 1+spread]. The
+// actual transfer duration by a uniform factor in [1-spread, 1+spread]. The
 // noise is unbiased on average, so it makes reports jittery without making
 // the network look consistently faster or slower. Equal rng seeds give equal
 // reports.
@@ -242,8 +246,8 @@ func NoisyObserve(rng *rand.Rand, spread float64) (func(float64) float64, error)
 	if !(spread >= 0 && spread < 1) {
 		return nil, errInvalidSpread
 	}
-	return func(actualSecondsPerByte float64) float64 {
-		return actualSecondsPerByte * (1 + spread*(2*rng.Float64()-1))
+	return func(actualSeconds float64) float64 {
+		return actualSeconds * (1 + spread*(2*rng.Float64()-1))
 	}, nil
 }
 

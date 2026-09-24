@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/raghavs6/KVFlow/internal/learner"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
 	"github.com/raghavs6/KVFlow/internal/simulator"
 )
@@ -79,18 +80,31 @@ func main() {
 			return simulator.RunStatic(fastBandwidth, truths)
 		},
 	}}
-	for _, alpha := range []float64{0.1, 0.5} {
-		for _, probeEvery := range []int{0, 5, 20, 100} {
-			policies = append(policies, policy{
-				name: fmt.Sprintf("adaptive K=%d α=%.1f", probeEvery, alpha),
-				run: func(truths []simulator.Scenario, seed uint64) ([]simulator.Outcome, error) {
-					observe, err := simulator.NoisyObserve(rand.New(rand.NewPCG(seed, seed)), noiseSpread)
-					if err != nil {
-						return nil, err
-					}
-					return simulator.RunAdaptive(fastBandwidth, alpha, probeEvery, observe, truths)
-				},
-			})
+	learners := []struct {
+		name string
+		new  func(alpha float64) (simulator.Learner, error)
+	}{
+		{"adaptive", func(alpha float64) (simulator.Learner, error) { return learner.NewEWMA(alpha, 1.0/fastBandwidth) }},
+		{"line", func(alpha float64) (simulator.Learner, error) { return learner.NewLine(alpha, 1.0/fastBandwidth) }},
+	}
+	for _, lr := range learners {
+		for _, alpha := range []float64{0.1, 0.5} {
+			for _, probeEvery := range []int{0, 5, 20, 100} {
+				policies = append(policies, policy{
+					name: fmt.Sprintf("%s K=%d α=%.1f", lr.name, probeEvery, alpha),
+					run: func(truths []simulator.Scenario, seed uint64) ([]simulator.Outcome, error) {
+						observe, err := simulator.NoisyObserve(rand.New(rand.NewPCG(seed, seed)), noiseSpread)
+						if err != nil {
+							return nil, err
+						}
+						l, err := lr.new(alpha)
+						if err != nil {
+							return nil, err
+						}
+						return simulator.RunAdaptive(l, probeEvery, observe, truths)
+					},
+				})
+			}
 		}
 	}
 

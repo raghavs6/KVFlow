@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raghavs6/KVFlow/internal/learner"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
 )
 
@@ -190,7 +191,7 @@ func TestRunAdaptiveRecoversAfterCongestion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunAdaptive(10_000_000_000, tt.alpha, 0, exact, truths)
+			got, err := RunAdaptive(newEWMA(t, tt.alpha), 0, exact, truths)
 			if err != nil {
 				t.Fatalf("RunAdaptive() error = %v", err)
 			}
@@ -213,7 +214,7 @@ func TestRunAdaptiveMissesRecoveryWithoutExploration(t *testing.T) {
 	congested := baseScenario(400*time.Millisecond, 50*time.Millisecond, 1_000_000_000)
 	truths := []Scenario{fast, fast, congested, congested, fast, fast, fast}
 
-	got, err := RunAdaptive(10_000_000_000, 0.5, 0, exact, truths)
+	got, err := RunAdaptive(newEWMA(t, 0.5), 0, exact, truths)
 	if err != nil {
 		t.Fatalf("RunAdaptive() error = %v", err)
 	}
@@ -228,16 +229,6 @@ func TestRunAdaptiveMissesRecoveryWithoutExploration(t *testing.T) {
 	for i := range want {
 		if got[i].Regret != want[i] {
 			t.Errorf("RunAdaptive()[%d] = %v, want %v", i, got[i].Regret, want[i])
-		}
-	}
-}
-
-func TestRunAdaptiveRejectsInvalidAlpha(t *testing.T) {
-	truths := []Scenario{baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)}
-
-	for _, alpha := range []float64{0, -0.5, 1.5} {
-		if _, err := RunAdaptive(10_000_000_000, alpha, 0, exact, truths); err == nil {
-			t.Errorf("RunAdaptive(alpha=%v) error = nil, want an invalid-alpha error", alpha)
 		}
 	}
 }
@@ -276,7 +267,7 @@ func TestRunAdaptiveProbing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunAdaptive(10_000_000_000, 0.5, 2, exact, tt.truths)
+			got, err := RunAdaptive(newEWMA(t, 0.5), 2, exact, tt.truths)
 			if err != nil {
 				t.Fatalf("RunAdaptive() error = %v", err)
 			}
@@ -306,7 +297,7 @@ func TestRunAdaptiveRecordsBeliefSeparatelyFromProbes(t *testing.T) {
 		W = scheduler.ActionWait
 	)
 
-	outcomes, err := RunAdaptive(10_000_000_000, 0.5, 2, exact, truths)
+	outcomes, err := RunAdaptive(newEWMA(t, 0.5), 2, exact, truths)
 	if err != nil {
 		t.Fatalf("RunAdaptive() error = %v", err)
 	}
@@ -345,18 +336,18 @@ func TestRunStaticBelievesOneAction(t *testing.T) {
 func TestRunAdaptiveRejectsNegativeProbeEvery(t *testing.T) {
 	truths := []Scenario{baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)}
 
-	if _, err := RunAdaptive(10_000_000_000, 0.5, -1, exact, truths); err == nil {
+	if _, err := RunAdaptive(newEWMA(t, 0.5), -1, exact, truths); err == nil {
 		t.Fatal("RunAdaptive(probeEvery=-1) error = nil, want an invalid-probe error")
 	}
 }
 
 func TestRunAdaptiveMisledByNoisyObservation(t *testing.T) {
 	fast := baseScenario(400*time.Millisecond, 50*time.Millisecond, 10_000_000_000)
-	fourTimesSlow := func(secondsPerByte float64) float64 { return 4 * secondsPerByte }
+	fourTimesSlow := func(seconds float64) float64 { return 4 * seconds }
 
 	// The network never changes, but one bad report moves the belief to
 	// 0.25 ns/B (transfer looks like 520ms), so wait wins from then on.
-	got, err := RunAdaptive(10_000_000_000, 0.5, 0, fourTimesSlow, []Scenario{fast, fast, fast})
+	got, err := RunAdaptive(newEWMA(t, 0.5), 0, fourTimesSlow, []Scenario{fast, fast, fast})
 	if err != nil {
 		t.Fatalf("RunAdaptive() error = %v", err)
 	}
@@ -411,7 +402,7 @@ func TestNoisyObserveRejectsInvalidSpread(t *testing.T) {
 }
 
 // exact reports transfer measurements without noise.
-func exact(secondsPerByte float64) float64 { return secondsPerByte }
+func exact(seconds float64) float64 { return seconds }
 
 func baseScenario(sourceQueue, destinationQueue time.Duration, bandwidth float64) Scenario {
 	return Scenario{
@@ -493,7 +484,7 @@ func TestHiddenStartupOverlapsDestinationQueue(t *testing.T) {
 func TestRunAdaptiveLearnsHiddenStartup(t *testing.T) {
 	truths := Stable(7, withStartup(900*time.Millisecond))
 
-	got, err := RunAdaptive(10_000_000_000, 0.5, 0, exact, truths)
+	got, err := RunAdaptive(newEWMA(t, 0.5), 0, exact, truths)
 	if err != nil {
 		t.Fatalf("RunAdaptive() error = %v", err)
 	}
@@ -548,7 +539,7 @@ func TestRunAdaptiveRecordsPredictedAndActual(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := RunAdaptive(10_000_000_000, 0.5, tt.probeEvery, exact, tt.truths)
+			got, err := RunAdaptive(newEWMA(t, 0.5), tt.probeEvery, exact, tt.truths)
 			if err != nil {
 				t.Fatalf("RunAdaptive() error = %v", err)
 			}
@@ -597,4 +588,60 @@ func TestRunStaticUsesEachRequest(t *testing.T) {
 	if got[0] != want {
 		t.Errorf("RunStatic()[0] = %+v, want %+v", got[0], want)
 	}
+}
+
+// Prefixes alternate 2k and 50k tokens and every transfer pays a hidden
+// 200ms startup: recompute is best for small, transfer for large.
+//
+//   - 0 small: believes no startup, transfers (118ms regret). One point
+//     can't fit a line, so it falls back and bytes look 13x dearer.
+//   - 1 large: now predicts a 5.2s transfer and recomputes (650ms regret).
+//   - 2 small: recomputes, correctly.
+//   - 3 large: a probe transfers it, giving a second size; the line
+//     through both points is exactly 200ms + bytes/10GB/s.
+//   - 4 on: every decision is right.
+func TestRunAdaptiveLineLearnsStartupFromMixedSizes(t *testing.T) {
+	small := withStartup(200 * time.Millisecond)
+	small.Request.PrefixTokens = 2_000
+	large := withStartup(200 * time.Millisecond)
+	var truths []Scenario
+	for range 5 {
+		truths = append(truths, small, large)
+	}
+
+	l, err := learner.NewLine(0.5, 1e-10)
+	if err != nil {
+		t.Fatalf("NewLine() error = %v", err)
+	}
+	got, err := RunAdaptive(l, 2, exact, truths)
+	if err != nil {
+		t.Fatalf("RunAdaptive() error = %v", err)
+	}
+
+	const ms = time.Millisecond
+	want := []time.Duration{118 * ms, 650 * ms, 0, 0, 0, 0, 0, 0, 0, 0}
+	for i := range want {
+		if got[i].Regret != want[i] {
+			t.Errorf("RunAdaptive()[%d].Regret = %v, want %v", i, got[i].Regret, want[i])
+		}
+	}
+	if got := l.Startup(); absDuration(got-200*ms) > time.Microsecond {
+		t.Errorf("learned Startup() = %v, want 200ms", got)
+	}
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
+func newEWMA(t *testing.T, alpha float64) *learner.EWMA {
+	t.Helper()
+	l, err := learner.NewEWMA(alpha, 1e-10)
+	if err != nil {
+		t.Fatalf("NewEWMA() error = %v", err)
+	}
+	return l
 }
