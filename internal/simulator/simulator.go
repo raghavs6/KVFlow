@@ -152,13 +152,13 @@ func RunStatic(belief Scenario, truths []Scenario) ([]Outcome, error) {
 // taken fresh from each scenario, as if reported by workers; only bandwidth
 // is learned. After probeEvery requests without a transfer, the next request
 // is forced to transfer so bandwidth is measured again; 0 disables probing.
-// observe turns a transfer's true seconds per byte into what the worker
+// observe turns a transfer's real duration per byte into what the worker
 // reports, which lets callers add measurement noise. It returns the outcome of
 // each request in order.
 func RunAdaptive(
 	initialBandwidth, alpha float64,
 	probeEvery int,
-	observe func(trueSecondsPerByte float64) float64,
+	observe func(actualSecondsPerByte float64) float64,
 	truths []Scenario,
 ) ([]Outcome, error) {
 	if !(alpha > 0 && alpha <= 1) {
@@ -194,17 +194,22 @@ func RunAdaptive(
 		sinceTransfer++
 		if action == scheduler.ActionTransfer {
 			sinceTransfer = 0
-			// The worker reports transfer duration / bytes; observe decides
-			// how far that report is from the true seconds per byte.
-			observed := observe(1 / truth.BandwidthBytesPerSec)
-			secondsPerByte = (1-alpha)*secondsPerByte + alpha*observed
+			// The worker reports how long the transfer really took per byte,
+			// so costs the model has no term for, like startup, leak into
+			// what it learns. observe decides how far the report is from
+			// that. An empty transfer says nothing about bandwidth.
+			bytes := float64(truth.Request.PrefixTokens) * truth.KVBytesPerToken
+			if bytes > 0 {
+				observed := observe(transferDuration(truth).Seconds() / bytes)
+				secondsPerByte = (1-alpha)*secondsPerByte + alpha*observed
+			}
 		}
 	}
 	return outcomes, nil
 }
 
 // NoisyObserve returns an observe function for RunAdaptive that scales each
-// true seconds-per-byte by a uniform factor in [1-spread, 1+spread]. The
+// actual seconds-per-byte by a uniform factor in [1-spread, 1+spread]. The
 // noise is unbiased on average, so it makes reports jittery without making
 // the network look consistently faster or slower. Equal rng seeds give equal
 // reports.
@@ -212,8 +217,8 @@ func NoisyObserve(rng *rand.Rand, spread float64) (func(float64) float64, error)
 	if !(spread >= 0 && spread < 1) {
 		return nil, errInvalidSpread
 	}
-	return func(trueSecondsPerByte float64) float64 {
-		return trueSecondsPerByte * (1 + spread*(2*rng.Float64()-1))
+	return func(actualSecondsPerByte float64) float64 {
+		return actualSecondsPerByte * (1 + spread*(2*rng.Float64()-1))
 	}, nil
 }
 

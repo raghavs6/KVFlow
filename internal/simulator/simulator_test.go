@@ -485,3 +485,27 @@ func TestHiddenStartupOverlapsDestinationQueue(t *testing.T) {
 		t.Errorf("ActualTTFT(transfer) = %v, want %v", actual, want)
 	}
 }
+
+// Workers report the real transfer time, startup included, so repeated
+// underpredictions pull the learned bandwidth down until transfer stops
+// winning. Each report is 1.1s / 2GB; predicted transfer TTFT climbs
+// 220, 670, 895, 1007.5, 1063.75, then 1091.9ms loses to 1070ms recompute.
+func TestRunAdaptiveLearnsHiddenStartup(t *testing.T) {
+	truths := Stable(7, withStartup(900*time.Millisecond))
+
+	got, err := RunAdaptive(10_000_000_000, 0.5, 0, exact, truths)
+	if err != nil {
+		t.Fatalf("RunAdaptive() error = %v", err)
+	}
+
+	const ms = time.Millisecond
+	want := []time.Duration{50 * ms, 50 * ms, 50 * ms, 50 * ms, 50 * ms, 0, 0}
+	if len(got) != len(want) {
+		t.Fatalf("RunAdaptive() returned %d outcomes, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Regret != want[i] {
+			t.Errorf("RunAdaptive()[%d].Regret = %v, want %v", i, got[i].Regret, want[i])
+		}
+	}
+}
