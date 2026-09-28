@@ -113,3 +113,39 @@ Drift moves seconds per byte, not bandwidth, in equal steps from fast to slow
 by mid-run and back, so transfer time changes by the same amount every
 request. It uses one prefix size and no startup so drift is the only
 variable.
+
+## Measuring real transfers (kvxfer)
+
+kvxfer sends plain TCP, not gRPC. gRPC is for control messages; bulk KV
+bytes would need chunking under its 4 MB message limit, and we would
+partly measure gRPC instead of the network.
+
+Each transfer is an 8-byte length header, the bytes, and a 1-byte reply
+from the receiver after it has read everything. The header lets transfers
+share a connection; the reply means the timer stops when data arrives,
+not when the OS accepts the writes into its buffer.
+
+`-reuse` keeps one connection for every transfer, dialed before timing.
+Without it, every transfer dials inside the timed span and so pays the
+handshake and TCP ramp-up. Comparing the two shows whether a startup cost
+is real.
+
+Sizes (1-256 MiB) are interleaved within numbered rounds, so a slow moment
+on the machine hits every size a little. Every run is printed, including
+warm-up, and the `round` column lets analysis drop round 1 explicitly.
+
+## Fitting real transfers (kvfit)
+
+kvfit fits with `learner.Line` at alpha 1e-6, which weights all points
+about equally and so is ordinary least squares. This tests the learner the
+policies use instead of a second copy of the math. The cost: `Line` pins a
+negative startup to 0, so a fit printing exactly 0 startup should be
+checked against a plain fit.
+
+Errors are reported per size as a percentage of that size's mean. Least
+squares minimizes misses in seconds, so the largest transfers dominate
+and one overall score would hide misses on small ones.
+
+The pass criterion, set before the first real run: every size within ±10%
+with round 1 dropped, in both connection modes. 10% is about how much
+repeats of one size already varied.

@@ -114,3 +114,28 @@ same policy recovered from a sudden jump in 410 requests.
 Across every changing workload, K=20 with alpha 0.5 has had the lowest
 regret. Slowdowns of any shape are easy; speedups are only visible through
 probes, and gradual ones need frequent probes or a larger alpha.
+
+## Localhost can measure bandwidth, not startup
+
+On a Mac over localhost (about 12 GB/s, which is memory-copy speed, not a
+network), the line fit the large sizes within about 1%. It missed the
+pass criterion at small sizes: fresh connections were off by 11% at
+4 MiB, reused ones by 17% at 1 MiB. Those misses are about 0.02-0.05 ms.
+
+The reason is noise, not shape. Repeats of a 256 MiB transfer spread over
+2-4 ms, while the startup being estimated is about 0.1 ms. Least squares
+lets the big transfers set the line, and a 2 ms wobble at the far end
+swings the intercept by more than the whole startup. A plain fit put the
+startup at 0.12 ± 0.12 ms for fresh connections and -0.01 ± 0.24 ms for
+reused ones, so neither is distinguishable from zero. It is like finding
+a car's weight by weighing a loaded truck with and without it, on a scale
+that wobbles by more than the car weighs.
+
+Warm-up matters more than startup here. Keeping round 1 moved the fresh
+connection startup from 0.12 to 0.66 ms and made the 1 MiB prediction
+101% too slow. The first transfers paid one-time costs that the fit
+then spread over every transfer.
+
+So localhost only checks the plumbing and the slope. Whether real
+transfers have a startup the learner can find needs a link where startup
+is large relative to the noise, like the shaped link planned in Docker.
