@@ -33,6 +33,28 @@ func TestFitRecoversExactLine(t *testing.T) {
 	if math.Abs(gotSPB-spb)/spb > 1e-6 {
 		t.Errorf("secondsPerByte = %g, want %g", gotSPB, spb)
 	}
+	for _, e := range errorsBySize(rows, gotStartup, gotSPB) {
+		if math.Abs(e.percent()) > 0.01 {
+			t.Errorf("%.0f bytes: error %.4f%%, want about 0", e.bytes, e.percent())
+		}
+	}
+}
+
+// Each size's measured time is the mean of its transfers, and the error is
+// relative to that mean: a line predicting 1 s against transfers of 2 s and
+// 4 s is 66.7% too fast.
+func TestErrorsBySizeAveragesEachSize(t *testing.T) {
+	rows := []row{{bytes: 1, seconds: 2}, {bytes: 5, seconds: 5}, {bytes: 1, seconds: 4}}
+	got := errorsBySize(rows, 0, 1)
+	if len(got) != 2 || got[0].bytes != 1 || got[1].bytes != 5 {
+		t.Fatalf("errorsBySize() sizes = %+v, want 1 then 5", got)
+	}
+	if got[0].measured != 3 || math.Abs(got[0].percent()+66.667) > 0.001 {
+		t.Errorf("size 1: measured %g, error %.3f%%, want 3 and -66.667%%", got[0].measured, got[0].percent())
+	}
+	if got[1].percent() != 0 {
+		t.Errorf("size 5: error %g%%, want 0", got[1].percent())
+	}
 }
 
 // Dropping round 1 and splitting by connection mode keeps only the rows

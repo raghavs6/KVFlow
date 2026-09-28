@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/raghavs6/KVFlow/internal/learner"
@@ -50,6 +51,14 @@ func main() {
 			}
 			fmt.Printf("reuse=%t, %s (%d transfers): startup %.3f ms, bandwidth %.2f GB/s\n",
 				reuse, label, len(sel), startup.Seconds()*1000, 1/spb/1e9)
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
+			fmt.Fprintln(tw, "size\tmeasured\tpredicted\terror\t")
+			for _, e := range errorsBySize(sel, startup, spb) {
+				fmt.Fprintf(tw, "%.0f MiB\t%.3f ms\t%.3f ms\t%+.1f%%\t\n",
+					e.bytes/(1<<20), e.measured*1000, e.predicted*1000, e.percent())
+			}
+			tw.Flush()
+			fmt.Println()
 		}
 	}
 }
@@ -85,6 +94,42 @@ func parse(r io.Reader) ([]row, error) {
 		rows = append(rows, r)
 	}
 	return rows, nil
+}
+
+// sizeError compares one transfer size's mean measured time to the line.
+type sizeError struct {
+	bytes, measured, predicted float64
+}
+
+// percent is positive when the line predicts a slower transfer than was
+// measured.
+func (e sizeError) percent() float64 {
+	return 100 * (e.predicted - e.measured) / e.measured
+}
+
+// errorsBySize reports each size in the order it first appears. Errors are
+// per size, not one overall score, because least squares minimizes misses
+// in seconds and so favors the largest transfers.
+func errorsBySize(rows []row, startup time.Duration, secondsPerByte float64) []sizeError {
+	var order []float64
+	sum := map[float64]float64{}
+	count := map[float64]int{}
+	for _, r := range rows {
+		if count[r.bytes] == 0 {
+			order = append(order, r.bytes)
+		}
+		sum[r.bytes] += r.seconds
+		count[r.bytes]++
+	}
+	out := make([]sizeError, len(order))
+	for i, b := range order {
+		out[i] = sizeError{
+			bytes:     b,
+			measured:  sum[b] / float64(count[b]),
+			predicted: startup.Seconds() + b*secondsPerByte,
+		}
+	}
+	return out
 }
 
 // filter keeps rows in one connection mode from minRound on.
