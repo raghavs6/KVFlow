@@ -116,9 +116,9 @@ func (l *countingListener) Accept() (net.Conn, error) {
 	return c, err
 }
 
-// run writes a header, then one row per transfer with sizes interleaved,
-// in both connection modes. Reuse dials once; otherwise every transfer
-// dials its own connection.
+// run writes a header, then one row per transfer with sizes interleaved
+// within numbered rounds, in both connection modes. Reuse dials once;
+// otherwise every transfer dials its own connection.
 func TestRunInterleavesSizes(t *testing.T) {
 	for _, reuse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reuse=%t", reuse), func(t *testing.T) {
@@ -135,17 +135,17 @@ func TestRunInterleavesSizes(t *testing.T) {
 				t.Fatalf("run() error = %v", err)
 			}
 			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-			want := []string{"reuse,bytes,seconds", "10", "20", "10", "20"}
+			want := []string{"reuse,round,bytes,seconds", "1,10", "1,20", "2,10", "2,20"}
 			if len(lines) != len(want) {
 				t.Fatalf("run() wrote %d lines, want %d:\n%s", len(lines), len(want), out.String())
 			}
 			for i, line := range lines[1:] {
 				fields := strings.Split(line, ",")
-				if fields[0] != fmt.Sprint(reuse) || fields[1] != want[i+1] {
-					t.Errorf("row %d = %q, want reuse=%t bytes=%s", i, line, reuse, want[i+1])
+				if fields[0] != fmt.Sprint(reuse) || fields[1]+","+fields[2] != want[i+1] {
+					t.Errorf("row %d = %q, want reuse=%t round,bytes=%s", i, line, reuse, want[i+1])
 				}
-				if s, err := strconv.ParseFloat(fields[2], 64); err != nil || s <= 0 {
-					t.Errorf("row %d seconds = %q, want > 0", i, fields[2])
+				if s, err := strconv.ParseFloat(fields[3], 64); err != nil || s <= 0 {
+					t.Errorf("row %d seconds = %q, want > 0", i, fields[3])
 				}
 			}
 			wantConns := int32(len(lines) - 1)

@@ -48,7 +48,7 @@ func main() {
 }
 
 // run times repeats transfers of every size to addr and writes one CSV row
-// per transfer. Sizes are interleaved so a slow moment on the machine hits
+// per transfer, numbering rounds from 1 so warm-up rows can be told apart. Sizes are interleaved so a slow moment on the machine hits
 // every size a little instead of one size a lot. Without reuse, each
 // transfer dials a new connection inside the timed span, so it pays the
 // handshake and a fresh TCP ramp-up; with reuse, one connection is dialed
@@ -63,8 +63,8 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int) error
 		defer c.Close()
 		shared = c
 	}
-	fmt.Fprintln(w, "reuse,bytes,seconds")
-	for range repeats {
+	fmt.Fprintln(w, "reuse,round,bytes,seconds")
+	for round := 1; round <= repeats; round++ {
 		for _, n := range sizes {
 			start := time.Now()
 			conn := shared
@@ -83,7 +83,7 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int) error
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(w, "%t,%d,%.6f\n", reuse, n, elapsed.Seconds())
+			fmt.Fprintf(w, "%t,%d,%d,%.6f\n", reuse, round, n, elapsed.Seconds())
 		}
 	}
 	return nil
