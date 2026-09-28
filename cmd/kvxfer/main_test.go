@@ -76,3 +76,23 @@ func TestServeRejectsShortTransfer(t *testing.T) {
 		t.Error("serve() error = nil, want an error for a short transfer")
 	}
 }
+
+// transfer and serve agree on the format: sizes that are not a multiple of
+// the write chunk still arrive exactly, or serve would misread the next
+// header and fail.
+func TestTransferRoundTrip(t *testing.T) {
+	addr, done := startServe(t)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	for _, n := range []int64{1, int64(len(chunk)), int64(len(chunk)) + 1, 5 << 20} {
+		if err := transfer(conn, n); err != nil {
+			t.Fatalf("transfer(%d) error = %v", n, err)
+		}
+	}
+	conn.Close()
+	if err := <-done; err != nil {
+		t.Errorf("serve() error = %v, want nil", err)
+	}
+}
