@@ -5,11 +5,47 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"os"
 	"time"
 )
+
+const repeats = 5
+
+var sizes = []int64{1 << 20, 4 << 20, 16 << 20, 64 << 20, 256 << 20}
+
+// Usage:
+//
+//	kvxfer recv -addr :9000
+//	kvxfer send -addr localhost:9000 [-reuse]
+func main() {
+	if len(os.Args) < 2 {
+		log.Fatal("usage: kvxfer recv|send [flags]")
+	}
+	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+	addr := fs.String("addr", "localhost:9000", "address to listen on or send to")
+	reuse := fs.Bool("reuse", false, "send: keep one connection open for every transfer")
+	fs.Parse(os.Args[2:])
+
+	switch os.Args[1] {
+	case "recv":
+		ln, err := net.Listen("tcp", *addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Fatal(serveAll(ln, log.Printf))
+	case "send":
+		if err := run(os.Stdout, *addr, *reuse, sizes, repeats); err != nil {
+			log.Fatal(err)
+		}
+	default:
+		log.Fatalf("unknown mode %q: want recv or send", os.Args[1])
+	}
+}
 
 // run times repeats transfers of every size to addr and writes one CSV row
 // per transfer. Sizes are interleaved so a slow moment on the machine hits
