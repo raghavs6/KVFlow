@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -94,5 +99,62 @@ func TestTransferRoundTrip(t *testing.T) {
 	conn.Close()
 	if err := <-done; err != nil {
 		t.Errorf("serve() error = %v, want nil", err)
+	}
+}
+
+// countingListener counts accepted connections.
+type countingListener struct {
+	net.Listener
+	accepted atomic.Int32
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+	return c, err
+}
+
+// run writes a header, then one row per transfer with sizes interleaved,
+// in both connection modes. Reuse dials once; otherwise every transfer
+// dials its own connection.
+func TestRunInterleavesSizes(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reuse=%t", reuse), func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen() error = %v", err)
+			}
+			defer ln.Close()
+			counted := &countingListener{Listener: ln}
+			go serveAll(counted, t.Logf)
+
+			var out bytes.Buffer
+			if err := run(&out, ln.Addr().String(), reuse, []int64{10, 20}, 2); err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			want := []string{"reuse,bytes,seconds", "10", "20", "10", "20"}
+			if len(lines) != len(want) {
+				t.Fatalf("run() wrote %d lines, want %d:\n%s", len(lines), len(want), out.String())
+			}
+			for i, line := range lines[1:] {
+				fields := strings.Split(line, ",")
+				if fields[0] != fmt.Sprint(reuse) || fields[1] != want[i+1] {
+					t.Errorf("row %d = %q, want reuse=%t bytes=%s", i, line, reuse, want[i+1])
+				}
+				if s, err := strconv.ParseFloat(fields[2], 64); err != nil || s <= 0 {
+					t.Errorf("row %d seconds = %q, want > 0", i, fields[2])
+				}
+			}
+			wantConns := int32(len(lines) - 1)
+			if reuse {
+				wantConns = 1
+			}
+			if got := counted.accepted.Load(); got != wantConns {
+				t.Errorf("receiver accepted %d connections, want %d", got, wantConns)
+			}
+		})
 	}
 }
