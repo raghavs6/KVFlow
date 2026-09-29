@@ -6,7 +6,11 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -o /kvxfer ./cmd/kvxfer
 
-# Debian rather than scratch so later steps can install tc (iproute2).
+# Debian rather than scratch so tc (iproute2) can shape the link and ping
+# can confirm the delay it adds.
 FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /kvxfer /usr/local/bin/kvxfer
 ENTRYPOINT ["kvxfer"]
