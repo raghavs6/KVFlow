@@ -214,3 +214,43 @@ agree there is no measurable startup, but the second is below one ping
 round trip, which it shouldn't be. The pinned 0 hid that puzzle. A
 round number from a clamped calculation should be checked against the
 unclamped one.
+
+## Predict first, then learn
+
+A fit that has seen every point, like kvfit, answers "does a line
+describe this data?". A policy never has that view. It must guess the
+next transfer from the past only. kvreplay tests that honestly: for
+each transfer, the learner predicts first and sees the answer second.
+
+It is like grading a weather forecaster only on days that hadn't
+happened yet when they made the forecast. If they could see tomorrow
+first, every forecast would look perfect. A test that swapped the two
+steps made the first prediction exactly right (5 s instead of the 0.1 s
+the starting belief gives), which is how the test proves the order.
+
+## A real slowdown, and how fast the learners noticed
+
+When the AWS burst allowance ran out, bandwidth fell 12.8x in one step.
+Every learner's next prediction was 90% too fast. Then:
+
+- alpha 0.5 was back within 10% after 4-6 transfers.
+- alpha 0.1 took 21.
+
+Alpha is how far each new measurement moves the belief. At 0.5 the
+belief moves halfway to what it just saw, so a 12.8x surprise shrinks
+fast. At 0.1 it moves a tenth of the way each time. It is the same
+lesson kvbench taught, now on a network nobody scripted.
+
+## A good number can be luck, so check the documentation
+
+The first AWS pair moved 9.5 Gbps over one connection. The second moved
+4.97 Gbps. The tempting read is that the second pair was slow. The AWS
+docs say the opposite: one TCP connection between VMs outside a cluster
+placement group is limited to 5 Gbps. The second pair was normal and
+the first was lucky.
+
+Like a store that promises delivery in 5 days: one package arriving in
+2 days doesn't mean every package will. Plan around the promise, not the
+best day. This is the same lesson as "metrics can look good for the
+wrong reason": when one result is surprisingly good, find out what was
+actually promised before trusting it.
