@@ -174,3 +174,29 @@ the transfer model is only claimed for warm, reused connections, and
 real transfers should reuse connections. If a design needs a connection
 per transfer, the model needs another shape first. Results:
 `BENCHMARK_RESULTS.md`.
+
+## Realism check on AWS
+
+Two VMs in one availability zone, because KVFlow is about workers in one
+cluster. Two regions would make startup easy to see, but would measure
+cross-country links instead.
+
+The account's free plan only launches free-tier types, so the VMs are
+`c7i-flex.large` rather than a fixed-bandwidth type. Its network can
+burst and then drop to a 0.39 Gbps baseline, so every run reads the ENA
+counter `bw_out_allowance_exceeded` before and after. A run is only
+trusted as burst-rate data if that counter didn't move.
+
+kvxfer is built on the Mac for linux/amd64 and copied with scp, so the
+VMs need no Docker or Go. Traffic uses private IPs, which are free
+within a zone. Everything is tagged `project=kvflow`, and teardown is
+checked by searching that tag.
+
+## The line model holds in one zone
+
+On the AWS link, reused connections fit the line within ±4% in both
+runs, passing the ±10% criterion. Bandwidth (1.19 GB/s) is the whole
+story: startup can't be told apart from 0 by a plain fit. This backs
+the decision to model reused connections only. Fresh connections match
+reused ones from 4 MiB up and miss at 1 MiB by ~0.6 ms. Results:
+`BENCHMARK_RESULTS.md`.
