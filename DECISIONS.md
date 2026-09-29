@@ -200,3 +200,39 @@ story: startup can't be told apart from 0 by a plain fit. This backs
 the decision to model reused connections only. Fresh connections match
 reused ones from 4 MiB up and miss at 1 MiB by ~0.6 ms. Results:
 `BENCHMARK_RESULTS.md`.
+
+## Replaying real transfers (kvreplay)
+
+kvreplay feeds a kvxfer CSV to Line and EWMA at kvbench's alphas (0.1,
+0.5) and starting belief (10 GB/s). Each prediction is made before the
+learner observes that transfer, so it scores the online learner the
+policies use, not a fit that has seen everything like kvfit. It tests
+the learner only: every transfer is observed, so probing and decisions
+are not tested.
+
+The CSV format moved into `internal/xfercsv` so kvxfer, kvfit and
+kvreplay share one definition. It prints one row per transfer with no
+built-in summary. The planned summary step was dropped: the one real
+slowdown was a clean step, and two numbers computed from the rows
+(error before the change, transfers until back within ±10%) answered
+the question.
+
+kvxfer's `-duration` stops by time, checked between rounds, because a
+round got ~13x longer after the drop and a round count couldn't bound
+the run.
+
+## Alpha 0.5 holds on a real slowdown
+
+The c7i-flex burst allowance ran out as a sudden 12.8x drop. Replayed,
+alpha 0.5 learners were back within ±10% in 4-6 transfers and alpha 0.1
+in 21. That matches kvbench's choice of alpha 0.5, now on real data.
+Recovery has not been measured on real data.
+
+## Expect 5 Gbps per connection on AWS
+
+AWS documents 5 Gbps for one TCP connection between VMs outside a
+cluster placement group, and 10 Gbps inside one. The burst run measured
+4.97 Gbps. An earlier pair measured 9.5 Gbps, above the limit, so it is
+treated as luck rather than a rate to plan around. If KV transfers need
+more than 5 Gbps between two workers, that means a placement group or
+several connections, which would need their own measurement first.
