@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // startServe accepts one connection on a localhost port, serves it, and
@@ -131,7 +132,7 @@ func TestRunInterleavesSizes(t *testing.T) {
 			go serveAll(counted, t.Logf)
 
 			var out bytes.Buffer
-			if err := run(&out, ln.Addr().String(), reuse, []int64{10, 20}, 2); err != nil {
+			if err := run(&out, ln.Addr().String(), reuse, []int64{10, 20}, 2, 0); err != nil {
 				t.Fatalf("run() error = %v", err)
 			}
 			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -156,5 +157,33 @@ func TestRunInterleavesSizes(t *testing.T) {
 				t.Errorf("receiver accepted %d connections, want %d", got, wantConns)
 			}
 		})
+	}
+}
+
+// TestRunDurationFinishesTheRound checks that with a duration, run only
+// stops between rounds: a 1 ns duration is over before the first round
+// ends, so exactly one full round is sent, whatever repeats says.
+func TestRunDurationFinishesTheRound(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+	go serveAll(ln, t.Logf)
+
+	var out bytes.Buffer
+	if err := run(&out, ln.Addr().String(), true, []int64{10, 20, 30}, 5, time.Nanosecond); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	want := []string{"1,10", "1,20", "1,30"}
+	if len(lines) != len(want)+1 {
+		t.Fatalf("run() wrote %d lines, want %d:\n%s", len(lines), len(want)+1, out.String())
+	}
+	for i, line := range lines[1:] {
+		fields := strings.Split(line, ",")
+		if got := fields[1] + "," + fields[2]; got != want[i] {
+			t.Errorf("row %d round,bytes = %s, want %s", i, got, want[i])
+		}
 	}
 }

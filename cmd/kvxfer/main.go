@@ -21,7 +21,7 @@ var sizes = []int64{1 << 20, 4 << 20, 16 << 20, 64 << 20, 256 << 20}
 // Usage:
 //
 //	kvxfer recv -addr :9000
-//	kvxfer send -addr localhost:9000 [-reuse]
+//	kvxfer send -addr localhost:9000 [-reuse] [-duration 20m]
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("usage: kvxfer recv|send [flags]")
@@ -29,6 +29,7 @@ func main() {
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	addr := fs.String("addr", "localhost:9000", "address to listen on or send to")
 	reuse := fs.Bool("reuse", false, "send: keep one connection open for every transfer")
+	duration := fs.Duration("duration", 0, "send: keep sending rounds until this much time has passed, instead of a fixed number")
 	fs.Parse(os.Args[2:])
 
 	switch os.Args[1] {
@@ -39,7 +40,7 @@ func main() {
 		}
 		log.Fatal(serveAll(ln, log.Printf))
 	case "send":
-		if err := run(os.Stdout, *addr, *reuse, sizes, repeats); err != nil {
+		if err := run(os.Stdout, *addr, *reuse, sizes, repeats, *duration); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -52,8 +53,10 @@ func main() {
 // every size a little instead of one size a lot. Without reuse, each
 // transfer dials a new connection inside the timed span, so it pays the
 // handshake and a fresh TCP ramp-up; with reuse, one connection is dialed
-// before timing starts.
-func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int) error {
+// before timing starts. A duration > 0 replaces repeats: rounds continue
+// until that much time has passed, checked only between rounds so every
+// round has every size.
+func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int, duration time.Duration) error {
 	var shared net.Conn
 	if reuse {
 		c, err := net.Dial("tcp", addr)
@@ -64,7 +67,8 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int) error
 		shared = c
 	}
 	fmt.Fprintln(w, "reuse,round,bytes,seconds")
-	for round := 1; round <= repeats; round++ {
+	begin := time.Now()
+	for round := 1; ; round++ {
 		for _, n := range sizes {
 			start := time.Now()
 			conn := shared
@@ -85,8 +89,14 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int) error
 			}
 			fmt.Fprintf(w, "%t,%d,%d,%.6f\n", reuse, round, n, elapsed.Seconds())
 		}
+		done := round >= repeats
+		if duration > 0 {
+			done = time.Since(begin) >= duration
+		}
+		if done {
+			return nil
+		}
 	}
-	return nil
 }
 
 // chunk is reused for every write, so sending n bytes needs only 1 MB of
