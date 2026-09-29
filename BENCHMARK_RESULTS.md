@@ -44,3 +44,45 @@ in the same Linux VM, so this is still a memory copy, not a network.
   ~20 ms, so the large sizes will keep making the intercept wobble.
 - Nothing passes the ±10% criterion, and nothing was expected to: there
   is no startup here to find.
+
+## Adding a known delay with tc netem (2026-09-28)
+
+**Setup:** same image, now with `iproute2` and `iputils-ping`. The receiver
+runs with `--cap-add NET_ADMIN` (without it, `tc` is refused), and the
+delay goes on its outgoing packets:
+
+```sh
+docker exec recv tc qdisc add dev eth0 root netem delay 10ms
+```
+
+Only the receiver's packets are held, so every round trip is one delay
+longer. Ping runs from a separate container on `kvnet`.
+
+**Ping round trip (20 pings each, first ping dropped):**
+
+| netem delay | min | median | max |
+|---|---|---|---|
+| none | 0.05 ms | ~0.11 ms (mean) | 0.15 ms |
+| 1 ms | 1.15 ms | 2.00 ms | 2.53 ms |
+| 5 ms | 5.87 ms | 6.75 ms | 7.51 ms |
+| 10 ms | 11.00 ms | 12.60 ms | 13.90 ms |
+| 20 ms | 20.80 ms | 22.80 ms | 25.90 ms |
+
+**TCP settings in the container:** `tcp_rmem` max 6291456 (6 MiB),
+`tcp_wmem` max 4194304 (4 MiB), `tcp_slow_start_after_idle` 1, congestion
+control `cubic`, MTU 1500.
+
+**What it means:**
+
+- The delay is real: the fastest round trip went from 0.05 ms to 11 ms.
+- netem adds roughly 1-3 ms on top of what it is asked for, and that extra
+  doesn't grow in step with the delay. The cause wasn't checked (a slow
+  timer in Docker's VM is one guess). So the known answer to compare kvfit
+  against is the measured round trip, ~12.6 ms median at `delay 10ms`,
+  not the 10 ms that was typed.
+- The first ping from a new container took about two delays (21.5 ms).
+  Probably the address lookup reply is delayed too. kvxfer's round 1
+  would pay this, which is one more reason to drop it.
+- With a ~12.6 ms round trip and a 6 MiB receive window, one connection
+  can't go faster than about 6 MiB / 12.6 ms ≈ 0.5 GB/s, far below the
+  ~10 GB/s baseline.
