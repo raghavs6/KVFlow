@@ -149,3 +149,28 @@ and one overall score would hide misses on small ones.
 The pass criterion, set before the first real run: every size within ±10%
 with round 1 dropped, in both connection modes. 10% is about how much
 repeats of one size already varied.
+
+## Known-answer test (Docker + netem)
+
+Localhost can't separate a ~0.1 ms startup from noise, so kvxfer runs
+between two containers with a delay we set. The delay is `tc netem` on
+the receiver's outgoing packets: netem sits under TCP, so TCP reacts to
+it as to a slow link, and the receiver stays running so it can be
+shaped with `docker exec`. Only the receiver gets `NET_ADMIN`.
+
+The known answer is the round trip ping measures, not the delay typed
+into tc. netem adds 1-3 ms of its own (10 ms measures ~12.6 ms).
+
+Runs alternate order (fresh, reuse, reuse, fresh), because the baseline
+showed noise follows when a run happened, not its mode.
+
+## The line model is for reused connections
+
+Over the 10 ms link, reused connections fit `startup + bytes *
+secondsPerByte` with startup ≈ one round trip (11.5-11.8 ms vs ~12.6
+ms). Fresh connections don't fit a line: slow start costs ~10 round
+trips even at 1 MiB, and fast retransmits make repeats jump 2-7x. So
+the transfer model is only claimed for warm, reused connections, and
+real transfers should reuse connections. If a design needs a connection
+per transfer, the model needs another shape first. Results:
+`BENCHMARK_RESULTS.md`.
