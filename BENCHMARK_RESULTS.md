@@ -234,3 +234,75 @@ error): fresh +0.109 ± 0.131, reuse -0.136 ± 0.324, reuse-2 -0.012 ±
 - **For KVFlow:** in one zone, transfer time is well modeled as bytes /
   bandwidth on a reused connection. Startup matters for fresh connections
   and small transfers.
+
+## A real bandwidth drop: burst allowance running out (2026-09-29)
+
+**Setup:** two fresh `c7i-flex.large` in `us-east-2a`, same launch as above
+plus `--instance-initiated-shutdown-behavior terminate` and a boot script
+running `shutdown -h +100`, so the VMs delete themselves after 100
+minutes even if teardown is forgotten. One reused-connection run:
+
+```sh
+kvxfer send -addr <A private IP>:9000 -reuse -duration 75m
+```
+
+run detached with `setsid nohup`. Every 5 s a loop logged the time and
+`bw_out_allowance_exceeded` on the sender and `bw_in_allowance_exceeded`
+on the receiver. The run was stopped at 1263 s, about 10 minutes after
+the drop, so the last round is partial. VMs ran ~26 minutes (~$0.07).
+
+Data: `results/aws-c7i-flex-burst/` (`burst.csv`, `counter_out.log`,
+`counter_in.log`, `send_start`). kvreplay output is not committed; it is
+reproduced with `go run ./cmd/kvreplay < burst.csv`.
+
+**Lining transfers up with the counter:** kvxfer sends back to back, so
+the running sum of `seconds` is the time since start. It totals 1261.0 s
+against 1263 s of wall time.
+
+**What happened:**
+
+| | before | after |
+|---|---|---|
+| rounds | 1-1100 | 1102-1185 |
+| bandwidth | 0.621 GB/s, every round | 0.0486 GB/s (0.39 Gbps) |
+| `bw_out_allowance_exceeded` | 0 | first nonzero at 638 s, then ~27k per 5 s |
+
+- The drop is a sudden step at transfer 5505 (the 256 MiB transfer of
+  round 1101), about 12.8x slower. The running sum puts that transfer at
+  633-638 s, where the counter first moved.
+- After the drop the rate is exactly the listed 0.39 Gbps baseline and
+  very steady: 256 MiB took 5546.5-5547.2 ms across rounds 1110-1185.
+- The first ~10.6 minutes ran at 0.62 GB/s, half of the 1.19 GB/s the
+  previous pair of VMs got. Why wasn't checked.
+
+**Replay (kvreplay, kvbench's alphas and 10 GB/s starting belief):**
+
+| learner | mean abs. error, transfers 6-5500 | transfers after the drop until error stays within ±10% |
+|---|---|---|
+| line α=0.1 | 1.3% | 21 |
+| line α=0.5 | 1.6% | 6 |
+| ewma α=0.1 | 1.7% | 21 |
+| ewma α=0.5 | 1.9% | 4 |
+
+Every learner predicted the first slow transfer 90% too fast (it took
+~10x its prediction). Error after the drop, every 2nd transfer:
+
+| learner | +0 | +2 | +4 | +6 | +10 | +16 | +22 |
+|---|---|---|---|---|---|---|---|
+| line α=0.1 | -90% | -71% | -68% | -42% | -38% | -14% | -9% |
+| line α=0.5 | -90% | -34% | -26% | -1% | -1% | 1% | -0% |
+| ewma α=0.1 | -90% | -77% | -62% | -50% | -33% | -17% | -9% |
+| ewma α=0.5 | -90% | -30% | -7% | -2% | -0% | 1% | -0% |
+
+**What it means:**
+
+- **On a real, sudden slowdown, alpha 0.5 adapts in 4-6 transfers and
+  alpha 0.1 in 21.** This matches kvbench, where alpha 0.5 had the lowest
+  regret on every changing workload.
+- **Line and EWMA behave almost the same here**, because this link has no
+  measurable startup. Only bandwidth changed, and both learn bandwidth.
+- **This tests the learner, not the policy.** Every transfer was
+  observed. A real policy would stop transferring once recompute looked
+  cheaper and would only learn through probes, as kvbench models.
+- Only a slowdown was captured. Recovery, the harder case, would need a
+  pause long enough for the allowance to refill.
