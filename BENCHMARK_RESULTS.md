@@ -148,3 +148,89 @@ sender before it exited):
 - **For KVFlow:** the startup + bytes line is a good model for a warm,
   reused connection, and a bad one for a connection opened per transfer.
   Transfers should reuse connections, or the model needs another shape.
+
+## Realism check: two AWS VMs in one zone (2026-09-29)
+
+**Setup:** two `c7i-flex.large` (x86, 2 vCPU) in `us-east-2a`, Amazon
+Linux 2023, one security group allowing SSH from one IP and all traffic
+between its members. kvxfer built on the Mac with `GOOS=linux
+GOARCH=amd64` and copied over with scp; traffic uses private IPs. The
+receiver ran on A (`172.31.7.13`), the sender on B.
+
+The account is on AWS's free plan, which refused `c8gn.4xlarge`
+("not eligible for Free Tier"), even though `--dry-run` said it would
+succeed. c7i-flex.large is free-tier eligible but its network is
+"up to 12.5 Gbps" with a 0.39 Gbps baseline, so the ENA counter
+`bw_out_allowance_exceeded` was read before and after every run to catch
+the burst allowance running out.
+
+Launch command:
+
+```sh
+aws ec2 run-instances --region us-east-2 \
+  --image-id resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+  --instance-type c7i-flex.large --count 2 --key-name kvflow \
+  --security-group-ids <kvflow sg> --subnet-id <us-east-2a default subnet> \
+  --associate-public-ip-address \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=project,Value=kvflow}]' \
+                       'ResourceType=volume,Tags=[{Key=project,Value=kvflow}]'
+```
+
+**Link:** ping B → A 0.225 min / 0.246 median / 0.498 max ms. MTU 9001.
+`tcp_rmem` max 30199872, `tcp_wmem` max 4194304, slow start after idle
+on, cubic.
+
+Run order fresh → reuse → reuse-2 → fresh-2, about 1.5 s each. Data:
+`results/aws-c7i-flex-same-az/`.
+
+**kvfit, round 1 dropped:**
+
+| run | startup | bandwidth | worst size error |
+|---|---|---|---|
+| fresh | 0.109 ms | 1.19 GB/s | -34.7% (1 MiB) |
+| reuse | 0.000 ms | 1.19 GB/s | +4.0% (1 MiB) |
+| reuse-2 | 0.000 ms | 1.19 GB/s | +2.8% (1 MiB) |
+| fresh-2 | 0.018 ms | 1.19 GB/s | -41.7% (1 MiB) |
+
+The two exact zeros are `Line` pinning a negative startup, so they were
+checked with a plain least-squares fit (round 1 dropped, ± one standard
+error): fresh +0.109 ± 0.131, reuse -0.136 ± 0.324, reuse-2 -0.012 ±
+0.017, fresh-2 +0.018 ± 0.173 ms.
+
+**Every repeat, ms (rounds 1-5):**
+
+| size | reuse-2 | fresh-2 |
+|---|---|---|
+| 1 MiB | 1.34, 0.91, 0.81, 0.88, 0.82 | 1.44, 2.08, 1.30, 1.39, 1.40 |
+| 4 MiB | 2.82, 3.66, 3.54, 3.49, 3.52 | 2.89, 3.12, 2.91, 3.97, 2.95 |
+| 16 MiB | 13.96, 13.92, 14.06, 14.08, 14.10 | 14.08, 13.97, 14.52, 13.74, 13.38 |
+| 64 MiB | 56.34, 56.25, 56.36, 56.34, 56.31 | 56.93, 55.79, 57.20, 56.28, 55.60 |
+| 256 MiB | 225.29, 225.35, 225.25, 225.32, 225.30 | 227.13, 225.96, 225.41, 226.38, 224.75 |
+
+**Counters on the sender, per run:** `bw_out_allowance_exceeded` stayed
+0 through all four runs (~7 GB sent). TCP `RetransSegs` rose by 516
+(fresh), 799 (reuse), 917 (reuse-2), 405 (fresh-2).
+
+**What it means:**
+
+- **Reused connections pass the ±10% criterion in both runs** (worst
+  +4.0%). This is the first setup where they do.
+- **The line is almost all slope.** Bandwidth is 1.19 GB/s (~9.5 Gbps)
+  in every run, and 256 MiB repeats agree to 0.1 ms. A 0.25 ms round
+  trip is small next to that, and the startup can't be told apart from 0.
+- **reuse-2's startup (-0.012 ± 0.017 ms) is below one ping round trip
+  (0.25 ms).** Each transfer waits for a 1-byte reply, so at least one
+  round trip should show. Not explained. One guess, not checked: ping
+  measures an idle link, and a busy one may answer faster.
+- **Fresh connections still fail at 1 MiB** (about 1.4 ms vs 0.85 ms
+  reused). The extra ~0.6 ms is a few round trips of handshake and slow
+  start. It only matters at small sizes; from 4 MiB up, fresh and reused
+  cost the same.
+- **The burst allowance never ran out**, so this is the burst rate, not
+  the 0.39 Gbps baseline. The rate stopped at ~9.5 Gbps, not the listed
+  12.5, and why wasn't checked.
+- **Retransmits happen here even on reused connections**, unlike Docker,
+  yet the times stayed steady. Where they come from wasn't checked.
+- **For KVFlow:** in one zone, transfer time is well modeled as bytes /
+  bandwidth on a reused connection. Startup matters for fresh connections
+  and small transfers.
