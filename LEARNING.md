@@ -177,3 +177,40 @@ made repeats jump 2-7x.
 The lesson: a model's shape can be right for one way of using a system
 and wrong for another. The line is right for warm connections, so KV
 transfers should reuse them.
+
+## In one data center, bandwidth is almost everything
+
+Between two VMs in the same AWS zone, a round trip takes 0.25 ms, but
+moving 256 MiB takes 225 ms. The fixed startup is so small next to the
+per-byte cost that the fit can't tell it apart from 0. It is like a
+taxi with a 1-cent pickup fee: the meter is the whole fare.
+
+That changes where the cost model's accuracy matters. In one zone,
+getting bandwidth right is what counts. Startup matters only for fresh
+connections and small transfers: a fresh 1 MiB transfer took 1.4 ms
+against 0.85 ms reused, while from 4 MiB up the two cost the same.
+
+## A dry run doesn't check everything
+
+`aws ec2 run-instances --dry-run` said a c8gn.4xlarge launch "would have
+succeeded". The real launch was refused because the free plan only
+allows free-tier types. The dry run checks permissions, not every rule.
+It is like a door that says your badge works but doesn't know the room
+is reserved. A dry run is a hint; only the real call is proof.
+
+## Read the counter instead of guessing from timings
+
+The VMs could burst to 12.5 Gbps and then drop to 0.39 Gbps. Instead of
+guessing from slow runs, the network driver keeps a counter,
+`bw_out_allowance_exceeded`, that goes up whenever the limit is hit. It
+stayed at 0, so we know these runs are burst-rate data. When a system
+reports a cause directly, read that before inferring it from effects.
+
+## Check a suspicious zero
+
+`Line` pins a negative startup to 0, so the reused runs printed exactly
+0.000 ms. A plain fit gave -0.136 ± 0.324 and -0.012 ± 0.017 ms. Both
+agree there is no measurable startup, but the second is below one ping
+round trip, which it shouldn't be. The pinned 0 hid that puzzle. A
+round number from a clamped calculation should be checked against the
+unclamped one.
