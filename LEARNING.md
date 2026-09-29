@@ -139,3 +139,41 @@ then spread over every transfer.
 So localhost only checks the plumbing and the slope. Whether real
 transfers have a startup the learner can find needs a link where startup
 is large relative to the noise, like the shaped link planned in Docker.
+
+## Test a measurer on an answer you already know
+
+Localhost couldn't tell whether kvfit finds startups, because the real
+startup was smaller than the noise. So we made one: `tc netem` holds
+every packet the receiver sends for 10 ms. It is like testing a scale
+with a weight you already know.
+
+Even the known weight needed weighing. netem added 1-3 ms on top of what
+it was asked for, so ping measured ~12.6 ms, not 10. Checking the setup
+first kept kvfit from being blamed for netem's extra.
+
+With reused connections kvfit found 11.5-11.8 ms. The learner works
+when the startup stands out from the noise.
+
+## A new TCP connection starts slow
+
+A fresh connection doesn't know how fast the link is, so TCP starts by
+sending a little (about 14 KB), waits for "got it", then doubles. This
+is called slow start. On a link where each round trip takes 12 ms,
+getting 1 MiB through takes about 7 doublings plus the handshake and
+the reply, around 10 round trips, or 110-160 ms. A reused connection
+has already sped up and sends 1 MiB in about one round trip, 13 ms.
+
+It is like a new employee: the manager checks a small task, then hands
+over one twice as big, and so on. An employee who's been there a while
+just gets the whole job.
+
+Slow start is why fresh connections don't fit `startup + bytes /
+bandwidth`. Time grows in steps with the number of doublings, not
+evenly with bytes. The fitted "startup" of 180-220 ms was the line
+swallowing slow start, not a real fixed cost. Bursts while speeding up
+also lost packets (225 resent, versus 0 on reused connections), which
+made repeats jump 2-7x.
+
+The lesson: a model's shape can be right for one way of using a system
+and wrong for another. The line is right for warm connections, so KV
+transfers should reuse them.
