@@ -4,17 +4,14 @@
 package main
 
 import (
-	"encoding/csv"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/raghavs6/KVFlow/internal/learner"
+	"github.com/raghavs6/KVFlow/internal/xfercsv"
 )
 
 // fitAlpha is tiny so every transfer counts about equally, which makes
@@ -22,16 +19,8 @@ import (
 // oldest point's weight differs from the newest by well under 0.1%.
 const fitAlpha = 1e-6
 
-const header = "reuse,round,bytes,seconds"
-
-type row struct {
-	reuse          bool
-	round          int
-	bytes, seconds float64
-}
-
 func main() {
-	rows, err := parse(os.Stdin)
+	rows, err := xfercsv.Parse(os.Stdin)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -63,39 +52,6 @@ func main() {
 	}
 }
 
-// parse reads kvxfer's CSV output.
-func parse(r io.Reader) ([]row, error) {
-	records, err := csv.NewReader(r).ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	if len(records) == 0 {
-		return nil, fmt.Errorf("empty input, want header %q", header)
-	}
-	rows := make([]row, 0, len(records)-1)
-	for i, rec := range records {
-		if i == 0 {
-			if strings.Join(rec, ",") != header {
-				return nil, fmt.Errorf("header = %v, want %q", rec, header)
-			}
-			continue
-		}
-		var r row
-		var errs [4]error
-		r.reuse, errs[0] = strconv.ParseBool(rec[0])
-		r.round, errs[1] = strconv.Atoi(rec[1])
-		r.bytes, errs[2] = strconv.ParseFloat(rec[2], 64)
-		r.seconds, errs[3] = strconv.ParseFloat(rec[3], 64)
-		for _, err := range errs {
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", i+1, err)
-			}
-		}
-		rows = append(rows, r)
-	}
-	return rows, nil
-}
-
 // sizeError compares one transfer size's mean measured time to the line.
 type sizeError struct {
 	bytes, measured, predicted float64
@@ -110,16 +66,16 @@ func (e sizeError) percent() float64 {
 // errorsBySize reports each size in the order it first appears. Errors are
 // per size, not one overall score, because least squares minimizes misses
 // in seconds and so favors the largest transfers.
-func errorsBySize(rows []row, startup time.Duration, secondsPerByte float64) []sizeError {
+func errorsBySize(rows []xfercsv.Row, startup time.Duration, secondsPerByte float64) []sizeError {
 	var order []float64
 	sum := map[float64]float64{}
 	count := map[float64]int{}
 	for _, r := range rows {
-		if count[r.bytes] == 0 {
-			order = append(order, r.bytes)
+		if count[r.Bytes] == 0 {
+			order = append(order, r.Bytes)
 		}
-		sum[r.bytes] += r.seconds
-		count[r.bytes]++
+		sum[r.Bytes] += r.Seconds
+		count[r.Bytes]++
 	}
 	out := make([]sizeError, len(order))
 	for i, b := range order {
@@ -133,10 +89,10 @@ func errorsBySize(rows []row, startup time.Duration, secondsPerByte float64) []s
 }
 
 // filter keeps rows in one connection mode from minRound on.
-func filter(rows []row, reuse bool, minRound int) []row {
-	var out []row
+func filter(rows []xfercsv.Row, reuse bool, minRound int) []xfercsv.Row {
+	var out []xfercsv.Row
 	for _, r := range rows {
-		if r.reuse == reuse && r.round >= minRound {
+		if r.Reuse == reuse && r.Round >= minRound {
 			out = append(out, r)
 		}
 	}
@@ -144,13 +100,13 @@ func filter(rows []row, reuse bool, minRound int) []row {
 }
 
 // fit feeds rows, in order, to the same line learner the policies use.
-func fit(rows []row) (time.Duration, float64, error) {
-	l, err := learner.NewLine(fitAlpha, rows[0].seconds/rows[0].bytes)
+func fit(rows []xfercsv.Row) (time.Duration, float64, error) {
+	l, err := learner.NewLine(fitAlpha, rows[0].Seconds/rows[0].Bytes)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, r := range rows {
-		l.Observe(r.bytes, r.seconds)
+		l.Observe(r.Bytes, r.Seconds)
 	}
 	return l.Startup(), l.SecondsPerByte(), nil
 }

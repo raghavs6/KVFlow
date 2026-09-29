@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/raghavs6/KVFlow/internal/xfercsv"
 )
 
 // Transfers that follow an exact line (2 ms startup, 1 GB/s) must be fit
@@ -13,15 +15,15 @@ import (
 func TestFitRecoversExactLine(t *testing.T) {
 	const startup, spb = 0.002, 1e-9
 	var csv strings.Builder
-	csv.WriteString(header + "\n")
+	csv.WriteString(xfercsv.Header + "\n")
 	for round := 1; round <= 3; round++ {
 		for _, n := range []float64{1 << 20, 16 << 20, 256 << 20} {
 			fmt.Fprintf(&csv, "true,%d,%.0f,%.9f\n", round, n, startup+n*spb)
 		}
 	}
-	rows, err := parse(strings.NewReader(csv.String()))
+	rows, err := xfercsv.Parse(strings.NewReader(csv.String()))
 	if err != nil {
-		t.Fatalf("parse() error = %v", err)
+		t.Fatalf("Parse() error = %v", err)
 	}
 	gotStartup, gotSPB, err := fit(filter(rows, true, 1))
 	if err != nil {
@@ -44,7 +46,7 @@ func TestFitRecoversExactLine(t *testing.T) {
 // relative to that mean: a line predicting 1 s against transfers of 2 s and
 // 4 s is 66.7% too fast.
 func TestErrorsBySizeAveragesEachSize(t *testing.T) {
-	rows := []row{{bytes: 1, seconds: 2}, {bytes: 5, seconds: 5}, {bytes: 1, seconds: 4}}
+	rows := []xfercsv.Row{{Bytes: 1, Seconds: 2}, {Bytes: 5, Seconds: 5}, {Bytes: 1, Seconds: 4}}
 	got := errorsBySize(rows, 0, 1)
 	if len(got) != 2 || got[0].bytes != 1 || got[1].bytes != 5 {
 		t.Fatalf("errorsBySize() sizes = %+v, want 1 then 5", got)
@@ -60,20 +62,14 @@ func TestErrorsBySizeAveragesEachSize(t *testing.T) {
 // Dropping round 1 and splitting by connection mode keeps only the rows
 // asked for.
 func TestFilter(t *testing.T) {
-	rows := []row{
-		{reuse: true, round: 1}, {reuse: true, round: 2},
-		{reuse: false, round: 1}, {reuse: false, round: 2}, {reuse: false, round: 3},
+	rows := []xfercsv.Row{
+		{Reuse: true, Round: 1}, {Reuse: true, Round: 2},
+		{Reuse: false, Round: 1}, {Reuse: false, Round: 2}, {Reuse: false, Round: 3},
 	}
 	if got := len(filter(rows, false, 2)); got != 2 {
 		t.Errorf("filter(reuse=false, from round 2) kept %d rows, want 2", got)
 	}
 	if got := len(filter(rows, true, 1)); got != 2 {
 		t.Errorf("filter(reuse=true, all rounds) kept %d rows, want 2", got)
-	}
-}
-
-func TestParseRejectsWrongHeader(t *testing.T) {
-	if _, err := parse(strings.NewReader("reuse,bytes,seconds\ntrue,1,0.1\n")); err == nil {
-		t.Error("parse() error = nil, want an error for the old header without round")
 	}
 }

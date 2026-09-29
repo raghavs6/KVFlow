@@ -12,6 +12,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/raghavs6/KVFlow/internal/xfercsv"
 )
 
 const repeats = 5
@@ -66,7 +68,7 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int, durat
 		defer c.Close()
 		shared = c
 	}
-	fmt.Fprintln(w, "reuse,round,bytes,seconds")
+	fmt.Fprintln(w, xfercsv.Header)
 	begin := time.Now()
 	for round := 1; ; round++ {
 		for _, n := range sizes {
