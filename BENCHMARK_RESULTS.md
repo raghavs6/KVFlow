@@ -228,7 +228,13 @@ error): fresh +0.109 ± 0.131, reuse -0.136 ± 0.324, reuse-2 -0.012 ±
   cost the same.
 - **The burst allowance never ran out**, so this is the burst rate, not
   the 0.39 Gbps baseline. The rate stopped at ~9.5 Gbps, not the listed
-  12.5, and why wasn't checked.
+  12.5. It is also above what AWS documents for one TCP connection
+  between VMs outside a cluster placement group: "bandwidth for
+  single-flow traffic is limited to 5 Gbps" ([EC2 network bandwidth
+  docs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-network-bandwidth.html)).
+  The next pair of VMs ran at that 5 Gbps (see below), so ~9.5 Gbps was
+  probably a lucky placement, not a rate to expect. The docs call burst
+  "best effort". Not checked, since these VMs are gone.
 - **Retransmits happen here even on reused connections**, unlike Docker,
   yet the times stayed steady. Where they come from wasn't checked.
 - **For KVFlow:** in one zone, transfer time is well modeled as bytes /
@@ -272,8 +278,14 @@ against 1263 s of wall time.
   633-638 s, where the counter first moved.
 - After the drop the rate is exactly the listed 0.39 Gbps baseline and
   very steady: 256 MiB took 5546.5-5547.2 ms across rounds 1110-1185.
-- The first ~10.6 minutes ran at 0.62 GB/s, half of the 1.19 GB/s the
-  previous pair of VMs got. Why wasn't checked.
+- The first ~10.6 minutes ran at 0.62 GB/s, which is 4.97 Gbps. That
+  matches AWS's documented 5 Gbps limit for a single TCP connection
+  between VMs that are not in the same cluster placement group. The
+  previous pair got 1.19 GB/s (9.5 Gbps) over the same kind of
+  connection, above that limit; this pair is the documented behavior and
+  that one the exception. The docs say a cluster placement group allows
+  up to 10 Gbps per connection. Neither a placement group nor several
+  connections at once was tested.
 
 **Replay (kvreplay, kvbench's alphas and 10 GB/s starting belief):**
 
