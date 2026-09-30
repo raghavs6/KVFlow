@@ -20,10 +20,14 @@ import (
 
 // Usage:
 //
-//	kvworker [-grpc :7000] [-data :9000]
+//	kvworker [-grpc 127.0.0.1:50051] [-data 127.0.0.1:9000]
+//
+// Both default to this machine only; listening on a network, such as with
+// -grpc 0.0.0.0:50051, has to be asked for. 50051 rather than 7000 because
+// macOS's AirPlay Receiver already holds 7000.
 func main() {
-	grpcAddr := flag.String("grpc", ":7000", "address to take controller commands on")
-	dataAddr := flag.String("data", ":9000", "address to receive KV bytes from peers on")
+	grpcAddr := flag.String("grpc", "127.0.0.1:50051", "address to take controller commands on")
+	dataAddr := flag.String("data", "127.0.0.1:9000", "address to receive KV bytes from peers on")
 	flag.Parse()
 
 	dataLn, err := net.Listen("tcp", *dataAddr)
