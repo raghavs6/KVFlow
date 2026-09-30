@@ -6,8 +6,10 @@ import (
 	"io"
 	"net"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -136,6 +138,108 @@ func TestInvalidRequestIsRejected(t *testing.T) {
 		if _, err := w.Transfer(context.Background(), req); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("Transfer(%v) error = %v, want code InvalidArgument", req, err)
 		}
+	}
+	if got := recv.accepted.Load(); got != 0 {
+		t.Errorf("receiver accepted %d connections, want 0", got)
+	}
+}
+
+// startStuckPeer accepts connections but never reads them, so a large send
+// blocks once the TCP buffers fill. Its connections close when the test
+// ends; register the worker first so this cleanup runs before the worker's
+// Close, which would otherwise wait on the lock a stuck send holds.
+func startStuckPeer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range held {
+			c.Close()
+		}
+	})
+	return ln.Addr().String()
+}
+
+// transferWithin fails the test if Transfer hasn't returned within limit,
+// so a Transfer that ignores ctx fails the test instead of hanging it.
+func transferWithin(t *testing.T, w *Worker, ctx context.Context, req *workerpb.TransferRequest, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Transfer(ctx, req)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("Transfer() still blocked %v after it was called", limit)
+		return nil
+	}
+}
+
+// A send to a peer that stopped reading ends at the caller's deadline, and
+// the lock it held is free again for the next transfer.
+func TestDeadlineStopsStuckSend(t *testing.T) {
+	w := newWorker(t)
+	stuck := startStuckPeer(t)
+	recv := startReceiver(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := transferWithin(t, w, ctx, &workerpb.TransferRequest{PeerAddr: stuck, Bytes: 64 << 20}, 2*time.Second)
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Errorf("Transfer() to stuck peer error = %v, want code DeadlineExceeded", err)
+	}
+
+	err = transferWithin(t, w, context.Background(), &workerpb.TransferRequest{PeerAddr: recv.Addr().String(), Bytes: 10}, 2*time.Second)
+	if err != nil {
+		t.Errorf("Transfer() after the timeout error = %v, want nil", err)
+	}
+}
+
+// Canceling without a deadline also stops a stuck send, so a controller
+// shutting down doesn't leave the worker sending.
+func TestCancelStopsStuckSend(t *testing.T) {
+	w := newWorker(t)
+	stuck := startStuckPeer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	err := transferWithin(t, w, ctx, &workerpb.TransferRequest{PeerAddr: stuck, Bytes: 64 << 20}, 2*time.Second)
+	if status.Code(err) != codes.Canceled {
+		t.Errorf("Transfer() error = %v, want code Canceled", err)
+	}
+}
+
+// A request whose caller already gave up, as one that waited out its
+// deadline behind another transfer would have, never dials.
+func TestCanceledRequestDoesNotStart(t *testing.T) {
+	recv := startReceiver(t)
+	w := newWorker(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := w.Transfer(ctx, &workerpb.TransferRequest{PeerAddr: recv.Addr().String(), Bytes: 10})
+	if status.Code(err) != codes.Canceled {
+		t.Errorf("Transfer() error = %v, want code Canceled", err)
 	}
 	if got := recv.accepted.Load(); got != 0 {
 		t.Errorf("receiver accepted %d connections, want 0", got)
