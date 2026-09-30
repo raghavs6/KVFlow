@@ -297,3 +297,37 @@ AirPlay, so the defaults didn't even start. Now it listens on
 127.0.0.1 unless told otherwise, and only sends to peers on its list.
 A front door that's locked unless you unlock it beats one that's open
 unless you remember to lock it.
+
+## Getting faster is harder to learn than getting slower
+
+When the network sped up 24.6x, alpha 0.5 needed ~10 transfers to catch
+up and alpha 0.1 ~55. After a slowdown of the same size they needed 5
+and 22.
+
+The reason is how error is measured. It is compared with the new time.
+After a slowdown, the old guess is too small, so it can be at most 100%
+off. After a speed-up, the old guess is 24x too big: 2360% off. The
+learner closes the same fraction of the gap each time, so a bigger gap
+takes more steps.
+
+Like a thermostat that moves halfway to the new temperature each minute.
+Going from 20° to 22° takes only a few minutes to get within a tenth of a
+degree. Going from 20° to 44° takes more minutes, even though it moves
+halfway each time.
+
+## A small thing measured fast is mostly noise
+
+At 1.19 GB/s, a 1 MiB transfer takes less than a millisecond. Tiny delays
+that don't matter to a 256 MiB transfer are a big share of that. About a
+third of the 1 MiB predictions missed by more than 10% with nothing
+changing. A rule like "within 10% from now on" then never comes true, and
+the count it gives (681) measures the noise, not the learner. Before
+trusting a number, check what it looks like when nothing is happening.
+
+## Check the process that's checking
+
+The wait for Phase A ran `pgrep -f "kvxfer send"` over SSH. That SSH
+command's own text contains "kvxfer send", so it always found itself and
+never stopped waiting. The sender had long finished. A check that can
+match itself always says yes. `pgrep -x kvxfer` matches only a process
+named exactly that.
