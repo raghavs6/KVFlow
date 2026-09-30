@@ -254,3 +254,46 @@ Like a store that promises delivery in 5 days: one package arriving in
 best day. This is the same lesson as "metrics can look good for the
 wrong reason": when one result is surprisingly good, find out what was
 actually promised before trusting it.
+
+## "Everything succeeded" is not the same as "everything was right"
+
+Eight transfers shared one connection with the lock taken out. Every
+one reported success. The receiver, meanwhile, had read over a million
+transfers. The bytes were all zeros, so a header that landed inside
+another transfer's data just looked like more data, and later zeros
+read as 0-byte transfers whose replies unblocked whichever sender was
+waiting. Nothing crashed; the timings were simply wrong.
+
+It is like a mail sorter who can't read. Letters get stuffed in the
+wrong boxes, but every box has letters in it, so a check that asks
+"did every box get mail?" passes. You have to check what's inside. The
+test now compares the sizes the receiver read with the sizes sent.
+
+## Watch a test fail before trusting it
+
+The first concurrency test passed with the lock removed, so it could
+never have caught the bug it was written for. The deadline test was
+checked the same way: with the server handed a context that has no
+deadline, it failed. A test you've never seen fail is like a smoke
+alarm you've never pressed the button on. It might work. You don't
+know.
+
+## A deadline has two sides
+
+When a gRPC call's time runs out, the client reports DeadlineExceeded
+on its own, whether or not the server noticed. So "the client gave up"
+doesn't mean "the server stopped". The worker only stops because gRPC
+carries the deadline to it and it checks, including a trick for a TCP
+write, which doesn't watch deadlines: it sets the connection's own
+deadline to "now" to wake the write. Hanging up the phone doesn't stop
+the person on the other end from talking; they have to notice you left.
+
+## Defaults are part of security
+
+kvworker's first defaults, `:7000` and `:9000`, meant "listen on every
+network", so starting it on a laptop let anyone on the same Wi-Fi tell
+it where to send gigabytes. And 7000 was already taken by macOS's
+AirPlay, so the defaults didn't even start. Now it listens on
+127.0.0.1 unless told otherwise, and only sends to peers on its list.
+A front door that's locked unless you unlock it beats one that's open
+unless you remember to lock it.
