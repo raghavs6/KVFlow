@@ -3,8 +3,6 @@
 package main
 
 import (
-	"encoding/binary"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/raghavs6/KVFlow/internal/xfer"
 	"github.com/raghavs6/KVFlow/internal/xfercsv"
 )
 
@@ -40,7 +39,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Fatal(serveAll(ln, log.Printf))
+		log.Fatal(xfer.ServeAll(ln, log.Printf))
 	case "send":
 		if err := run(os.Stdout, *addr, *reuse, sizes, repeats, *duration); err != nil {
 			log.Fatal(err)
@@ -81,7 +80,7 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int, durat
 				}
 				conn = c
 			}
-			err := transfer(conn, n)
+			err := xfer.Send(conn, n)
 			elapsed := time.Since(start)
 			if !reuse {
 				conn.Close()
@@ -97,70 +96,6 @@ func run(w io.Writer, addr string, reuse bool, sizes []int64, repeats int, durat
 		}
 		if done {
 			return nil
-		}
-	}
-}
-
-// chunk is reused for every write, so sending n bytes needs only 1 MB of
-// memory. TCP does not compress, so zeros cost the same as real KV data.
-var chunk = make([]byte, 1<<20)
-
-// transfer sends n zero bytes over conn and returns once the receiver
-// confirms it read them all.
-func transfer(conn net.Conn, n int64) error {
-	var header [8]byte
-	binary.BigEndian.PutUint64(header[:], uint64(n))
-	if _, err := conn.Write(header[:]); err != nil {
-		return err
-	}
-	for left := n; left > 0; {
-		k := min(left, int64(len(chunk)))
-		if _, err := conn.Write(chunk[:k]); err != nil {
-			return err
-		}
-		left -= k
-	}
-	var ack [1]byte
-	_, err := io.ReadFull(conn, ack[:])
-	return err
-}
-
-// serveAll serves every connection on ln, each in its own goroutine, until
-// ln is closed. A failed transfer only ends its own connection.
-func serveAll(ln net.Listener, logf func(format string, args ...any)) error {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return err
-		}
-		go func() {
-			if err := serve(conn); err != nil {
-				logf("serve %s: %v", conn.RemoteAddr(), err)
-			}
-		}()
-	}
-}
-
-// serve handles transfers on conn until the sender closes it. A transfer is
-// an 8-byte big-endian length, then that many bytes. After reading them all,
-// serve replies with one byte so the sender knows they arrived.
-func serve(conn net.Conn) error {
-	defer conn.Close()
-	var header [8]byte
-	for {
-		if _, err := io.ReadFull(conn, header[:]); err != nil {
-			// EOF before any header byte is the sender closing cleanly.
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		n := int64(binary.BigEndian.Uint64(header[:]))
-		if _, err := io.CopyN(io.Discard, conn, n); err != nil {
-			return err
-		}
-		if _, err := conn.Write([]byte{1}); err != nil {
-			return err
 		}
 	}
 }
