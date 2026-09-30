@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/raghavs6/KVFlow/internal/workerpb"
 	"github.com/raghavs6/KVFlow/internal/xfer"
 )
@@ -92,14 +95,50 @@ func TestFailedTransferDiscardsConnection(t *testing.T) {
 
 	w := newWorker(t)
 	req := &workerpb.TransferRequest{PeerAddr: ln.Addr().String(), Bytes: 3 << 20}
-	if _, err := w.Transfer(context.Background(), req); err == nil {
-		t.Fatal("first Transfer() error = nil, want an error from the dropped connection")
+	if _, err := w.Transfer(context.Background(), req); status.Code(err) != codes.Unavailable {
+		t.Fatalf("first Transfer() error = %v, want code Unavailable from the dropped connection", err)
 	}
 	if _, err := w.Transfer(context.Background(), req); err != nil {
 		t.Errorf("second Transfer() error = %v, want nil on a fresh connection", err)
 	}
 	if got := counted.accepted.Load(); got != 2 {
 		t.Errorf("receiver accepted %d connections, want 2", got)
+	}
+}
+
+// A peer nobody listens on is reported as Unavailable, not Unknown, so the
+// controller can tell a network problem from a bug.
+func TestDeadPeerIsUnavailable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // nothing listens here now, so dials are refused
+
+	w := newWorker(t)
+	_, err = w.Transfer(context.Background(), &workerpb.TransferRequest{PeerAddr: addr, Bytes: 10})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("Transfer() error = %v, want code Unavailable", err)
+	}
+}
+
+// Requests that can't be a transfer are rejected before any dial. Zero
+// bytes matters most: the learner divides by bytes.
+func TestInvalidRequestIsRejected(t *testing.T) {
+	recv := startReceiver(t)
+	w := newWorker(t)
+	for _, req := range []*workerpb.TransferRequest{
+		{PeerAddr: recv.Addr().String(), Bytes: 0},
+		{PeerAddr: recv.Addr().String(), Bytes: -1},
+		{PeerAddr: "", Bytes: 10},
+	} {
+		if _, err := w.Transfer(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("Transfer(%v) error = %v, want code InvalidArgument", req, err)
+		}
+	}
+	if got := recv.accepted.Load(); got != 0 {
+		t.Errorf("receiver accepted %d connections, want 0", got)
 	}
 }
 

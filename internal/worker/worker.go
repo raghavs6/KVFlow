@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/raghavs6/KVFlow/internal/workerpb"
 	"github.com/raghavs6/KVFlow/internal/xfer"
 )
@@ -31,13 +34,22 @@ func New() *Worker {
 // Transfer sends req's bytes to its peer and replies with how long the send
 // took. Only the send is timed: waiting for another transfer to finish and
 // dialing a new connection are not network time the learner should see.
+//
+// Errors carry gRPC codes so the controller can tell its own bugs
+// (InvalidArgument) from network trouble (Unavailable).
 func (w *Worker) Transfer(ctx context.Context, req *workerpb.TransferRequest) (*workerpb.TransferReply, error) {
+	// Checked before the lock so a bad request never waits in line. The
+	// learner divides by bytes, so a transfer must have some.
+	if req.GetBytes() <= 0 || req.GetPeerAddr() == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "want bytes > 0 and a peer address, got %d bytes to %q", req.GetBytes(), req.GetPeerAddr())
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	conn, err := w.conn(req.GetPeerAddr())
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Unavailable, "dial peer: %v", err)
 	}
 	start := time.Now()
 	if err := xfer.Send(conn, req.GetBytes()); err != nil {
@@ -47,7 +59,7 @@ func (w *Worker) Transfer(ctx context.Context, req *workerpb.TransferRequest) (*
 		// controller decides what a failed transfer means.
 		conn.Close()
 		delete(w.conns, req.GetPeerAddr())
-		return nil, err
+		return nil, status.Errorf(codes.Unavailable, "send to peer: %v", err)
 	}
 	return &workerpb.TransferReply{Seconds: time.Since(start).Seconds()}, nil
 }
