@@ -2,7 +2,10 @@ package worker
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
 	"net"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -63,5 +66,75 @@ func TestTransferReusesConnection(t *testing.T) {
 	}
 	if got := recv.accepted.Load(); got != 1 {
 		t.Errorf("receiver accepted %d connections, want 1", got)
+	}
+}
+
+// startRecorder accepts one connection and reads transfers in xfer's format
+// like xfer.Serve, but also records each size it read. Once the sender
+// closes, it sends the sizes on the returned channel.
+func startRecorder(t *testing.T) (string, <-chan []int64) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	sizes := make(chan []int64, 1)
+	go func() {
+		var got []int64
+		defer func() { sizes <- got }()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var header [8]byte
+		for {
+			if _, err := io.ReadFull(conn, header[:]); err != nil {
+				return
+			}
+			n := int64(binary.BigEndian.Uint64(header[:]))
+			got = append(got, n)
+			if _, err := io.CopyN(io.Discard, conn, n); err != nil {
+				return
+			}
+			if _, err := conn.Write([]byte{1}); err != nil {
+				return
+			}
+		}
+	}()
+	return ln.Addr().String(), sizes
+}
+
+// Concurrent transfers to one peer take turns on the shared connection.
+// Success alone can't show that: the bytes are zeros, so a header that lands
+// inside another transfer's body is read as body, and later zeros are read
+// as a 0-byte transfer whose reply unblocks some other sender. So the
+// receiver's sizes must match the sizes sent.
+func TestConcurrentTransfersDoNotMix(t *testing.T) {
+	addr, received := startRecorder(t)
+	w := New()
+	var sent []int64
+	errs := make(chan error, 8)
+	for i := range 8 {
+		// Not multiples of xfer's 1 MiB write chunk, so writes end
+		// mid-chunk where another transfer's could slip in.
+		n := int64(i+1)<<20 + 12345
+		sent = append(sent, n)
+		go func() {
+			_, err := w.Transfer(context.Background(), &workerpb.TransferRequest{PeerAddr: addr, Bytes: n})
+			errs <- err
+		}()
+	}
+	for range 8 {
+		if err := <-errs; err != nil {
+			t.Errorf("Transfer() error = %v", err)
+		}
+	}
+	w.Close() // ends the recorder
+	got := <-received
+	slices.Sort(got)
+	if !slices.Equal(got, sent) {
+		t.Errorf("receiver read sizes %v, want %v", got, sent)
 	}
 }
