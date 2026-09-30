@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+// Package worker is the control channel between the KVFlow controller and a
+// worker. It carries commands and measurements only; KV bytes travel over
+// plain TCP in internal/xfer's format.
+package worker;
+
+option go_package = "github.com/raghavs6/KVFlow/internal/workerpb";
+
+service Worker {
+  // Transfer sends bytes to the worker listening at peer_addr and replies
+  // with how long it took, timed on this worker so the RPC itself is not
+  // counted.
+  rpc Transfer(TransferRequest) returns (TransferReply);
+}
+
+message TransferRequest {
+  // peer_addr is the receiving worker's data address, such as "10.0.0.5:9000".
+  string peer_addr = 1;
+  int64 bytes = 2;
+}
+
+message TransferReply {
+  // seconds is a float so it feeds Learner.Observe without conversion.
+  double seconds = 1;
+}
