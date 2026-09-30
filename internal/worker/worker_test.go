@@ -45,10 +45,11 @@ func startReceiver(t *testing.T) *countingListener {
 	return counted
 }
 
-// newWorker returns a Worker whose connections close when the test ends.
-func newWorker(t *testing.T) *Worker {
+// newWorker returns a Worker allowed to send to peers, whose connections
+// close when the test ends.
+func newWorker(t *testing.T, peers ...string) *Worker {
 	t.Helper()
-	w := New()
+	w := New(peers)
 	t.Cleanup(func() { w.Close() })
 	return w
 }
@@ -56,7 +57,7 @@ func newWorker(t *testing.T) *Worker {
 // Transfers to one peer report a positive time and share one connection.
 func TestTransferReusesConnection(t *testing.T) {
 	recv := startReceiver(t)
-	w := newWorker(t)
+	w := newWorker(t, recv.Addr().String())
 	for _, n := range []int64{10, 3 << 20} {
 		reply, err := w.Transfer(context.Background(), &workerpb.TransferRequest{
 			PeerAddr: recv.Addr().String(),
@@ -95,7 +96,7 @@ func TestFailedTransferDiscardsConnection(t *testing.T) {
 		xfer.ServeAll(counted, t.Logf)
 	}()
 
-	w := newWorker(t)
+	w := newWorker(t, ln.Addr().String())
 	req := &workerpb.TransferRequest{PeerAddr: ln.Addr().String(), Bytes: 3 << 20}
 	if _, err := w.Transfer(context.Background(), req); status.Code(err) != codes.Unavailable {
 		t.Fatalf("first Transfer() error = %v, want code Unavailable from the dropped connection", err)
@@ -118,7 +119,7 @@ func TestDeadPeerIsUnavailable(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close() // nothing listens here now, so dials are refused
 
-	w := newWorker(t)
+	w := newWorker(t, addr)
 	_, err = w.Transfer(context.Background(), &workerpb.TransferRequest{PeerAddr: addr, Bytes: 10})
 	if status.Code(err) != codes.Unavailable {
 		t.Errorf("Transfer() error = %v, want code Unavailable", err)
@@ -129,7 +130,7 @@ func TestDeadPeerIsUnavailable(t *testing.T) {
 // bytes matters most: the learner divides by bytes.
 func TestInvalidRequestIsRejected(t *testing.T) {
 	recv := startReceiver(t)
-	w := newWorker(t)
+	w := newWorker(t, recv.Addr().String())
 	for _, req := range []*workerpb.TransferRequest{
 		{PeerAddr: recv.Addr().String(), Bytes: 0},
 		{PeerAddr: recv.Addr().String(), Bytes: -1},
@@ -144,11 +145,38 @@ func TestInvalidRequestIsRejected(t *testing.T) {
 	}
 }
 
+// A peer not on the allowlist is refused before any dial, so reaching the
+// worker isn't enough to make it send somewhere new. Matching is exact:
+// localhost and 127.0.0.1 are the same machine but different entries, which
+// can only refuse a real peer, never admit an unlisted one.
+func TestUnlistedPeerIsDenied(t *testing.T) {
+	recv := startReceiver(t)
+	_, port, err := net.SplitHostPort(recv.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	for name, allowed := range map[string][]string{
+		"other peer":                {"127.0.0.1:1"},
+		"same, spelled differently": {"localhost:" + port},
+		"empty list":                nil,
+	} {
+		w := newWorker(t, allowed...)
+		_, err := w.Transfer(context.Background(), &workerpb.TransferRequest{PeerAddr: recv.Addr().String(), Bytes: 10})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Errorf("%s: Transfer() error = %v, want code PermissionDenied", name, err)
+		}
+	}
+	if got := recv.accepted.Load(); got != 0 {
+		t.Errorf("receiver accepted %d connections, want 0", got)
+	}
+}
+
 // startStuckPeer accepts connections but never reads them, so a large send
-// blocks once the TCP buffers fill. Its connections close when the test
-// ends; register the worker first so this cleanup runs before the worker's
-// Close, which would otherwise wait on the lock a stuck send holds.
-func startStuckPeer(t *testing.T) string {
+// blocks once the TCP buffers fill. release closes those connections.
+// Register it with t.Cleanup after creating the worker, so it runs before
+// the worker's Close, which would otherwise wait on the lock a stuck send
+// holds.
+func startStuckPeer(t *testing.T) (addr string, release func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -167,15 +195,14 @@ func startStuckPeer(t *testing.T) string {
 			mu.Unlock()
 		}
 	}()
-	t.Cleanup(func() {
-		ln.Close()
+	t.Cleanup(func() { ln.Close() })
+	return ln.Addr().String(), func() {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, c := range held {
 			c.Close()
 		}
-	})
-	return ln.Addr().String()
+	}
 }
 
 // transferWithin fails the test if Transfer hasn't returned within limit,
@@ -199,9 +226,10 @@ func transferWithin(t *testing.T, w *Worker, ctx context.Context, req *workerpb.
 // A send to a peer that stopped reading ends at the caller's deadline, and
 // the lock it held is free again for the next transfer.
 func TestDeadlineStopsStuckSend(t *testing.T) {
-	w := newWorker(t)
-	stuck := startStuckPeer(t)
+	stuck, release := startStuckPeer(t)
 	recv := startReceiver(t)
+	w := newWorker(t, stuck, recv.Addr().String())
+	t.Cleanup(release)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -219,8 +247,9 @@ func TestDeadlineStopsStuckSend(t *testing.T) {
 // Canceling without a deadline also stops a stuck send, so a controller
 // shutting down doesn't leave the worker sending.
 func TestCancelStopsStuckSend(t *testing.T) {
-	w := newWorker(t)
-	stuck := startStuckPeer(t)
+	stuck, release := startStuckPeer(t)
+	w := newWorker(t, stuck)
+	t.Cleanup(release)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(200*time.Millisecond, cancel)
@@ -234,7 +263,7 @@ func TestCancelStopsStuckSend(t *testing.T) {
 // deadline behind another transfer would have, never dials.
 func TestCanceledRequestDoesNotStart(t *testing.T) {
 	recv := startReceiver(t)
-	w := newWorker(t)
+	w := newWorker(t, recv.Addr().String())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := w.Transfer(ctx, &workerpb.TransferRequest{PeerAddr: recv.Addr().String(), Bytes: 10})
@@ -290,7 +319,7 @@ func startRecorder(t *testing.T) (string, <-chan []int64) {
 // receiver's sizes must match the sizes sent.
 func TestConcurrentTransfersDoNotMix(t *testing.T) {
 	addr, received := startRecorder(t)
-	w := New()
+	w := New([]string{addr})
 	var sent []int64
 	errs := make(chan error, 8)
 	for i := range 8 {

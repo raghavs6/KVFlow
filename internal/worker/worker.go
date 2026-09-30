@@ -24,11 +24,21 @@ type Worker struct {
 	// bytes on a shared connection.
 	mu    sync.Mutex
 	conns map[string]net.Conn
+
+	// allowed is the set of peer addresses this worker may send to. It is
+	// never written after New, so reading it needs no lock.
+	allowed map[string]bool
 }
 
-// New returns a Worker with no open connections.
-func New() *Worker {
-	return &Worker{conns: make(map[string]net.Conn)}
+// New returns a Worker with no open connections that sends only to the
+// peer addresses in allowed, matched as exact strings. An empty list allows
+// nothing.
+func New(allowed []string) *Worker {
+	w := &Worker{conns: make(map[string]net.Conn), allowed: make(map[string]bool)}
+	for _, addr := range allowed {
+		w.allowed[addr] = true
+	}
+	return w
 }
 
 // Transfer sends req's bytes to its peer and replies with how long the send
@@ -36,13 +46,18 @@ func New() *Worker {
 // dialing a new connection are not network time the learner should see.
 //
 // Errors carry gRPC codes so the controller can tell its own bugs
-// (InvalidArgument) from network trouble (Unavailable) and from giving up
-// itself (DeadlineExceeded, Canceled).
+// (InvalidArgument, PermissionDenied) from network trouble (Unavailable)
+// and from giving up itself (DeadlineExceeded, Canceled).
 func (w *Worker) Transfer(ctx context.Context, req *workerpb.TransferRequest) (*workerpb.TransferReply, error) {
 	// Checked before the lock so a bad request never waits in line. The
 	// learner divides by bytes, so a transfer must have some.
 	if req.GetBytes() <= 0 || req.GetPeerAddr() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "want bytes > 0 and a peer address, got %d bytes to %q", req.GetBytes(), req.GetPeerAddr())
+	}
+	// Without this, anyone who reaches the worker could aim it at any
+	// address and turn a tiny request into gigabytes sent to a victim.
+	if !w.allowed[req.GetPeerAddr()] {
+		return nil, status.Errorf(codes.PermissionDenied, "peer %q is not in this worker's allowlist", req.GetPeerAddr())
 	}
 
 	w.mu.Lock()

@@ -26,11 +26,12 @@ func listen(t *testing.T) net.Listener {
 	return ln
 }
 
-// startClient serves newServer on a localhost port and returns a real gRPC
-// client for it, so calls go through gRPC's encoding and transport.
-func startClient(t *testing.T) workerpb.WorkerClient {
+// startClient serves newServer, allowed to send to peers, on a localhost
+// port and returns a real gRPC client for it, so calls go through gRPC's
+// encoding and transport.
+func startClient(t *testing.T, peers ...string) workerpb.WorkerClient {
 	t.Helper()
-	s := newServer()
+	s := newServer(peers)
 	ln := listen(t)
 	go s.Serve(ln)
 	t.Cleanup(s.Stop)
@@ -47,7 +48,7 @@ func startClient(t *testing.T) workerpb.WorkerClient {
 func TestTransferOverGRPC(t *testing.T) {
 	data := listen(t)
 	go xfer.ServeAll(data, t.Logf)
-	client := startClient(t)
+	client := startClient(t, data.Addr().String())
 
 	reply, err := client.Transfer(context.Background(), &workerpb.TransferRequest{PeerAddr: data.Addr().String(), Bytes: 3 << 20})
 	if err != nil {
@@ -76,7 +77,9 @@ func TestClientDeadlineReachesWorker(t *testing.T) {
 		default:
 		}
 	})
-	client := startClient(t)
+	data := listen(t)
+	go xfer.ServeAll(data, t.Logf)
+	client := startClient(t, stuck.Addr().String(), data.Addr().String())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -87,8 +90,6 @@ func TestClientDeadlineReachesWorker(t *testing.T) {
 
 	// The worker gave up too: if its send were still blocked it would hold
 	// the lock, and this transfer to a healthy peer would wait behind it.
-	data := listen(t)
-	go xfer.ServeAll(data, t.Logf)
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := client.Transfer(ctx, &workerpb.TransferRequest{PeerAddr: data.Addr().String(), Bytes: 10}); err != nil {
