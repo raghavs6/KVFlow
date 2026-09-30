@@ -40,9 +40,13 @@ func (w *Worker) Transfer(ctx context.Context, req *workerpb.TransferRequest) (*
 		return nil, err
 	}
 	start := time.Now()
-	// A failed send leaves conn cached partway through a transfer, so the
-	// next transfer on it is misread. Not yet handled.
 	if err := xfer.Send(conn, req.GetBytes()); err != nil {
+		// conn may have stopped partway through a transfer, and the
+		// receiver would misread whatever came next on it. Drop it so
+		// the next transfer dials fresh. There is no retry: the
+		// controller decides what a failed transfer means.
+		conn.Close()
+		delete(w.conns, req.GetPeerAddr())
 		return nil, err
 	}
 	return &workerpb.TransferReply{Seconds: time.Since(start).Seconds()}, nil

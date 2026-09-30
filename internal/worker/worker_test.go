@@ -69,6 +69,40 @@ func TestTransferReusesConnection(t *testing.T) {
 	}
 }
 
+// A transfer that fails partway leaves its connection mid-transfer, so the
+// worker must drop it and dial a fresh one for the next transfer.
+func TestFailedTransferDiscardsConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	counted := &countingListener{Listener: ln}
+	go func() {
+		// The first connection dies after the header, mid-transfer.
+		conn, err := counted.Accept()
+		if err != nil {
+			return
+		}
+		var header [8]byte
+		io.ReadFull(conn, header[:])
+		conn.Close()
+		xfer.ServeAll(counted, t.Logf)
+	}()
+
+	w := newWorker(t)
+	req := &workerpb.TransferRequest{PeerAddr: ln.Addr().String(), Bytes: 3 << 20}
+	if _, err := w.Transfer(context.Background(), req); err == nil {
+		t.Fatal("first Transfer() error = nil, want an error from the dropped connection")
+	}
+	if _, err := w.Transfer(context.Background(), req); err != nil {
+		t.Errorf("second Transfer() error = %v, want nil on a fresh connection", err)
+	}
+	if got := counted.accepted.Load(); got != 2 {
+		t.Errorf("receiver accepted %d connections, want 2", got)
+	}
+}
+
 // startRecorder accepts one connection and reads transfers in xfer's format
 // like xfer.Serve, but also records each size it read. Once the sender
 // closes, it sends the sizes on the returned channel.
