@@ -318,3 +318,106 @@ Every learner predicted the first slow transfer 90% too fast (it took
   cheaper and would only learn through probes, as kvbench models.
 - Only a slowdown was captured. Recovery, the harder case, would need a
   pause long enough for the allowance to refill.
+
+## Recovery: the network getting faster again (2026-09-30)
+
+**Setup:** two fresh `c7i-flex.large` in `us-east-2a`, launched as in the
+burst run (self-terminating after 100 minutes, terminated by hand after
+~44). Receiver on A (`172.31.7.31`), sender on B. Three phases against
+one receiver, each send a new reused connection:
+
+1. Phase A: `kvxfer send -reuse -duration 15m`, to spend the allowance
+   and leave the learners settled on "slow".
+2. Break: no traffic for 717 s.
+3. Phase C: `kvxfer send -reuse -duration 10m`.
+
+Counters were logged every 5 s on both VMs for the whole run. VMs ran
+~44 minutes (~$0.12).
+
+Data: `results/aws-c7i-flex-recovery/` (`phaseA.csv`, `phaseC.csv`,
+`send_start_a`, `send_start_c`, `counter_in.log`, `counter_out.log`).
+Replayed as one stream, the second header dropped:
+
+```sh
+(cat phaseA.csv; tail -n +2 phaseC.csv) | go run ./cmd/kvreplay
+```
+
+Transfers 1-5785 are Phase A, 5786-6875 Phase C.
+
+**What happened:**
+
+| | Phase A | break | Phase C |
+|---|---|---|---|
+| fast | 0-325 s at 1.19 GB/s | | 0-44 s at 1.19 GB/s |
+| slow | 325-904 s at 0.048 GB/s | | 44-602 s at 0.048 GB/s |
+| `bw_in_allowance_exceeded` (A) | first moved at 325 s | flat at 3133110 for all 143 samples | moved again at 44 s |
+
+- This pair ran at 1.19 GB/s (9.5 Gbps), the rate the first pair got and
+  above AWS's documented 5 Gbps for one connection. So the "lucky" rate
+  happened on 2 of 3 pairs. Planning at 5 Gbps still stands, since it is
+  what AWS promises.
+- The receiver's `bw_in_allowance_exceeded` counted the throttle; the
+  sender's `bw_out_allowance_exceeded` stayed 0. In the burst run it was
+  the other way round. Log both sides.
+- At twice the rate, the allowance ran out at 325 s instead of 638 s.
+  Data sent before the throttle was about the same: ~387 GB here,
+  ~396 GB in the burst run. Two runs, so only a hint of a fixed budget.
+- The 717 s break bought ~44 s of fast sending (~140 rounds, ~700
+  transfers), then the throttle came back.
+- Three changes in the replay: slowdown at transfer 5395, speed-up at
+  5786 (the first transfer of Phase C), slowdown at 6499. Each slowdown
+  is 24.6x (1.19 to 0.0484 GB/s), and so is the speed-up.
+
+**Replay: the two slowdowns** (transfers after the change until error
+stays within ±10%):
+
+| learner | slowdown at 5395 | slowdown at 6499 |
+|---|---|---|
+| line α=0.1 | 22 | 22 |
+| line α=0.5 | 6 | 5 |
+| ewma α=0.1 | 22 | 23 |
+| ewma α=0.5 | 4 | 5 |
+
+The same as the burst run (21 and 4-6), on a 24.6x drop instead of 12.8x.
+
+**Replay: the speed-up.** Every learner predicted the first fast transfer
+16x too slow (+1512%). Error after the speed-up, skipping 1 MiB rows
+(each +k is the next 4-256 MiB transfer):
+
+| learner | +0 | +4 | +6 | +8 | +10 | +16 | +22 | +30 | +40 | +50 | +60 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| line α=0.1 | +3074% | +2043% | +1367% | +1349% | +843% | +483% | +286% | +99% | +34% | +14% | +5% |
+| line α=0.5 | +3059% | +484% | +70% | +50% | +5% | -0% | +0% | -0% | -0% | +3% | +0% |
+| ewma α=0.1 | +2779% | +1551% | +1231% | +1018% | +760% | +434% | +231% | +88% | +29% | +12% | +3% |
+| ewma α=0.5 | +1587% | +148% | +26% | +8% | +4% | -3% | -5% | -4% | -4% | +2% | -2% |
+
+- **Alpha 0.5 is back within ±10% in ~8-10 transfers; alpha 0.1 in
+  ~50-60.** Both are slower than after a slowdown of the same size.
+- "Stays within ±10%" doesn't work as a count here. At 1.19 GB/s a 1 MiB
+  transfer takes under 1 ms, and 394 of 1078 of them missed ±10% for
+  line α=0.5 in the steady fast part of Phase A, when nothing was
+  changing. Counting all sizes gave 681 for every learner, which is that
+  noise. Without 1 MiB, line α=0.5's last miss was at +9. The others
+  still had rare misses long after (last at +54, +141, +561), but no
+  more often than in the steady fast part of Phase A (1.0-3.2% of
+  4-256 MiB transfers), so the table is read instead.
+
+**Why a speed-up takes longer, checked with a noise-free EWMA:** error is
+measured against the new time. After a slowdown the old belief is too
+small, never more than 100% off, and ~90% of the gap has to close. After
+a 24.6x speed-up it starts 2360% off, and the gap has to shrink ~236x.
+Each observation closes the same fraction α of the gap, so the second
+takes more steps. A single-rate EWMA with no noise needs 23 vs 53
+transfers at α=0.1 and 5 vs 9 at α=0.5, matching the replay.
+
+**What it means:**
+
+- **Alpha 0.5 recovers in ~10 transfers on a real speed-up.** With the
+  two drops, it is now the faster learner in every real change measured.
+- **For a policy, recovery is worse than these numbers.** Every transfer
+  here was observed. A policy that stopped transferring during the slow
+  period would only see the speed-up through occasional probes, so each
+  of these transfers would be one probe. kvbench models this; this data
+  doesn't.
+- Only one break length (717 s) was tried, so how the refill grows with
+  idle time is not measured.
