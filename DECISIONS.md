@@ -303,3 +303,34 @@ in Phase 4) or workers run on a network we don't control. When it
 comes, encrypting only gRPC is cheap. Encrypting the data channel costs
 CPU per byte and would change the transfer times being learned, so it
 needs a measurement first.
+
+## Recovery run on AWS
+
+Three phases against one receiver: send 15 minutes to spend the
+allowance and leave the learners on "slow", idle, send 10 more. Phase C
+is a second `kvxfer send`, not a pause flag inside kvxfer. The VMs have
+`tcp_slow_start_after_idle = 1`, so a connection kept open through the
+break would ramp up again anyway, and a flag would be code for nothing.
+Round 1 of Phase C pays that ramp-up.
+
+The break only has to refill enough for ~50 fast transfers, not the
+whole allowance. It was planned at 10 minutes and ran 717 s because the
+wait for Phase A got stuck (`pgrep -f` matched its own SSH command;
+`pgrep -x kvxfer` doesn't). It bought ~44 s of fast sending.
+
+Log `bw_in` and `bw_out` on both VMs. The burst run's throttle showed on
+the sender's `bw_out`, this one on the receiver's `bw_in`.
+
+## Measuring recovery after a speed-up
+
+"Transfers until error stays within ±10%" breaks at the fast rate: a
+1 MiB transfer takes under 1 ms, and about a third of them miss ±10%
+with nothing changing. For the speed-up, the error table is read with
+1 MiB left out, and a learner has recovered when it misses no more often
+than it does in steady state.
+
+Alpha 0.5 recovered in ~8-10 transfers and alpha 0.1 in ~50-60, slower
+than the 4-6 and ~21 after a drop of the same size. That is the EWMA's
+arithmetic, not the network: error is measured against the new, much
+smaller time, so a 24.6x speed-up starts 2360% off. So alpha 0.5 stays
+the choice, and speed-ups are the case to watch when probes are rare.
