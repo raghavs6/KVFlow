@@ -237,6 +237,44 @@ treated as luck rather than a rate to plan around. If KV transfers need
 more than 5 Gbps between two workers, that means a placement group or
 several connections, which would need their own measurement first.
 
+## The gRPC worker (kvworker)
+
+The controller sends each worker a unary `Transfer(peer_addr, bytes)`
+over gRPC, and the worker sends the bytes over plain TCP in
+`internal/xfer`'s format, the one kvxfer uses. The worker times the
+send and returns `seconds`. If the controller timed the call, the RPC's
+own round trip would be learned as transfer startup.
+
+- One connection per peer, dialed on the first transfer outside the
+  timed span and reused, because the line model only holds for reused
+  connections.
+- One lock for the whole transfer. Two sends on one connection would
+  mix their bytes. A lock per peer would allow parallel sends, but
+  they would share the NIC and skew each other's measurements.
+  Contention should be added on purpose, not by accident. The clock
+  starts after the lock, so queueing isn't counted as network time.
+- A failed send drops the connection, since it may be partway through
+  a transfer. There is no retry: a retried time would include the
+  failure. The next transfer runs on a cold connection and pays TCP
+  ramp-up, so the learner sees one slow sample after a failure
+  (observed: 18 ms instead of ~11 ms for 64 MiB on localhost).
+- Errors carry gRPC codes: InvalidArgument and PermissionDenied for
+  requests the worker won't run, Unavailable for dial or send failures,
+  and DeadlineExceeded or Canceled when the controller gave up.
+  `bytes <= 0` is rejected because the learner divides by bytes. -1
+  used to succeed, because `io.CopyN` copies nothing for a negative
+  count.
+- The worker honors the caller's deadline: DialContext for dials, a
+  `context.AfterFunc` that expires the connection's deadline for a
+  blocked send, and a context check once the lock is held, because a
+  mutex wait can't be interrupted.
+
+`seconds` is a double, not `google.protobuf.Duration`, because the
+learner and kvxfer's CSV already use float seconds. `peer_addr` is a raw
+address because there is no peer registry yet. Generated code is
+committed so Docker and cross-compiles don't need protoc;
+`internal/workerpb/generate.go` pins the tool versions.
+
 ## Protecting the worker without TLS
 
 kvworker has no TLS or authentication. The danger is amplification: a
