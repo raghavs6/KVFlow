@@ -397,10 +397,11 @@ The same as the burst run (21 and 4-6), on a 24.6x drop instead of 12.8x.
   transfer takes under 1 ms, and 394 of 1078 of them missed ±10% for
   line α=0.5 in the steady fast part of Phase A, when nothing was
   changing. Counting all sizes gave 681 for every learner, which is that
-  noise. Without 1 MiB, line α=0.5's last miss was at +9. The others
-  still had rare misses long after (last at +54, +141, +561), but no
-  more often than in the steady fast part of Phase A (1.0-3.2% of
-  4-256 MiB transfers), so the table is read instead.
+  noise. Without 1 MiB, the last miss was at +9 for line α=0.5 and +54
+  for line α=0.1, which is the end of its recovery. The EWMAs still had
+  isolated misses long after (last at +141 and +561): from +60 on, 1 and
+  8 of 522 transfers, no more often than in the steady fast part of
+  Phase A (1.7% and 3.2%). So the table is read instead.
 
 **Why a speed-up takes longer, checked with a noise-free EWMA:** error is
 measured against the new time. After a slowdown the old belief is too
