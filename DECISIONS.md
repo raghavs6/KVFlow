@@ -236,3 +236,32 @@ cluster placement group, and 10 Gbps inside one. The burst run measured
 treated as luck rather than a rate to plan around. If KV transfers need
 more than 5 Gbps between two workers, that means a placement group or
 several connections, which would need their own measurement first.
+
+## Protecting the worker without TLS
+
+kvworker has no TLS or authentication. The danger is amplification: a
+~30-byte request could make it send gigabytes to any address. Three
+layers stand in for authentication:
+
+- It listens on 127.0.0.1 unless told otherwise, so running it on a
+  laptop doesn't expose it to the Wi-Fi. The old `:7000` default
+  listened everywhere and also collided with macOS's AirPlay Receiver,
+  so the gRPC default is now 50051.
+- It sends only to the exact peer addresses in `-peers`, and an empty
+  list allows nothing. This stops amplification toward outsiders even
+  if the network rules below are wrong. A per-transfer size cap was
+  dropped: many small requests get around it.
+- The network decides who can reach it. On AWS, the security group
+  allows the gRPC port only from the controller's IP and the data port
+  only from the other workers. In Docker, the ports are not published
+  to the host. Most in-cluster systems rely on this layer alone. When
+  VMs are next launched, it is checked by reading the rules back with
+  `aws ec2 describe-security-groups` and connecting from a host that
+  should be refused.
+
+Someone who reaches the gRPC port can still make the worker send to its
+own peers. TLS or mTLS waits until the data is sensitive (real KV cache
+in Phase 4) or workers run on a network we don't control. When it
+comes, encrypting only gRPC is cheap. Encrypting the data channel costs
+CPU per byte and would change the transfer times being learned, so it
+needs a measurement first.
