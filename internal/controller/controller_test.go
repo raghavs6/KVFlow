@@ -4,12 +4,15 @@ import (
 	"context"
 	"net"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/raghavs6/KVFlow/internal/learner"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
@@ -44,12 +47,18 @@ func startCluster(t *testing.T) (workerpb.WorkerClient, *countingListener) {
 	recv := &countingListener{Listener: ln}
 	t.Cleanup(func() { ln.Close() })
 	go xfer.ServeAll(recv, t.Logf)
+	return startWorker(t, recv.Addr().String()), recv
+}
 
+// startWorker runs a gRPC worker on localhost, allowed to send to peer,
+// until the test ends, and returns a client for it.
+func startWorker(t *testing.T, peer string) workerpb.WorkerClient {
+	t.Helper()
 	grpcLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	w := worker.New([]string{recv.Addr().String()})
+	w := worker.New([]string{peer})
 	server := grpc.NewServer()
 	workerpb.RegisterWorkerServer(server, w)
 	go server.Serve(grpcLn)
@@ -60,7 +69,40 @@ func startCluster(t *testing.T) (workerpb.WorkerClient, *countingListener) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return workerpb.NewWorkerClient(conn), recv
+	return workerpb.NewWorkerClient(conn)
+}
+
+// startStuckPeer accepts connections but never reads, so a large send
+// blocks once the TCP buffers fill. Its connections close when the test
+// ends.
+func startStuckPeer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range held {
+			c.Close()
+		}
+	})
+	return ln.Addr().String()
 }
 
 // scenarios returns n requests for a 1 MiB prefix where waiting never wins,
@@ -94,7 +136,7 @@ func TestRunLearnsFromRealTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, time.Second, scenarios(5))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -121,7 +163,7 @@ func TestRunNeverLearnsWithoutTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, time.Second, scenarios(5))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -154,7 +196,7 @@ func TestProbingCorrectsSlowBelief(t *testing.T) {
 	// Alpha 0.5 halves a 1000x-too-slow belief once per probe, so it takes
 	// about 11 probes, one every 3 requests, before transfer wins on its own.
 	const n = 60
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, scenarios(n))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, time.Second, scenarios(n))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -204,7 +246,7 @@ func TestFailedTransfersAreRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, scenarios(9))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, time.Second, scenarios(9))
 	if err != nil {
 		t.Fatalf("Run() error = %v, want failures recorded per request", err)
 	}
@@ -238,7 +280,7 @@ func TestCanceledRunStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := Run(ctx, client, recv.Addr().String(), l, 0, scenarios(3)); err == nil {
+	if _, err := Run(ctx, client, recv.Addr().String(), l, 0, time.Second, scenarios(3)); err == nil {
 		t.Error("Run() error = nil, want the cancellation")
 	}
 }
@@ -248,7 +290,51 @@ func TestRunRejectsNegativeProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), nil, "", l, -1, scenarios(1)); err == nil {
+	if _, err := Run(context.Background(), nil, "", l, -1, time.Second, scenarios(1)); err == nil {
 		t.Error("Run(probeEvery = -1) error = nil, want an error")
 	}
+}
+
+func TestRunRejectsNonPositiveTimeout(t *testing.T) {
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), nil, "", l, 0, 0, scenarios(1)); err == nil {
+		t.Error("Run(timeout = 0) error = nil, want an error")
+	}
+}
+
+// A transfer to a peer that stopped reading fails at the timeout and is
+// recorded, and the run goes on to the next request.
+func TestStuckTransferTimesOut(t *testing.T) {
+	peer := startStuckPeer(t)
+	client := startWorker(t, peer)
+
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1 GiB is far more than the TCP buffers hold.
+	big := scenarios(2)
+	for i := range big {
+		big[i].Request.PrefixTokens = 1 << 20
+	}
+
+	const timeout = 200 * time.Millisecond
+	start := time.Now()
+	results, err := Run(context.Background(), client, peer, l, 0, timeout, big)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want timeouts recorded per request", err)
+	}
+	for i, r := range results {
+		if status.Code(r.Err) != codes.DeadlineExceeded {
+			t.Errorf("results[%d].Err = %v, want DeadlineExceeded", i, r.Err)
+		}
+	}
+	if elapsed > 5*timeout {
+		t.Errorf("Run() took %v for 2 transfers with a %v timeout", elapsed, timeout)
+	}
+	t.Logf("took %v; failure: %v", elapsed, results[0].Err)
 }

@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/raghavs6/KVFlow/internal/costmodel"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
@@ -13,7 +14,10 @@ import (
 	"github.com/raghavs6/KVFlow/internal/workerpb"
 )
 
-var errInvalidProbe = errors.New("probeEvery must not be negative")
+var (
+	errInvalidProbe   = errors.New("probeEvery must not be negative")
+	errInvalidTimeout = errors.New("timeout must be positive")
+)
 
 // Result is what happened to one request.
 type Result struct {
@@ -39,7 +43,9 @@ type Result struct {
 // believes, so a wrong belief that the network is slow still gets measured;
 // 0 disables probing. A failed transfer is recorded in its result and the
 // run goes on; a failed attempt still counts as the probe, so a dead worker
-// is tried at most once every probeEvery+1 requests. It returns a result
+// is tried at most once every probeEvery+1 requests. Each transfer gets
+// timeout to finish, so a stuck one fails instead of hanging the run. It
+// returns a result
 // for each scenario, and stops early only when ctx ends or the inputs are
 // invalid.
 func Run(
@@ -48,10 +54,14 @@ func Run(
 	peerAddr string,
 	l simulator.Learner,
 	probeEvery int,
+	timeout time.Duration,
 	scenarios []simulator.Scenario,
 ) ([]Result, error) {
 	if probeEvery < 0 {
 		return nil, errInvalidProbe
+	}
+	if timeout <= 0 {
+		return nil, errInvalidTimeout
 	}
 
 	sinceTransfer := 0
@@ -91,7 +101,9 @@ func Run(
 			continue
 		}
 		sinceTransfer = 0
-		reply, err := client.Transfer(ctx, &workerpb.TransferRequest{PeerAddr: peerAddr, Bytes: bytes})
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		reply, err := client.Transfer(callCtx, &workerpb.TransferRequest{PeerAddr: peerAddr, Bytes: bytes})
+		cancel()
 		if err != nil {
 			// The worker's failure is one request's outcome; ctx ending
 			// means the caller wants the run stopped.
