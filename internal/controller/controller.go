@@ -89,7 +89,7 @@ func Run(
 		if probeEvery > 0 && sinceTransfer >= probeEvery {
 			action = scheduler.ActionTransfer
 		}
-		bytes := int64(float64(s.Request.PrefixTokens) * s.KVBytesPerToken)
+		bytes := prefixBytes(s)
 		results[i] = Result{
 			Believed:         choice.Action,
 			Action:           action,
@@ -117,4 +117,9 @@ func Run(
 		l.Observe(float64(bytes), reply.GetSeconds())
 	}
 	return results, nil
+}
+
+// prefixBytes is the size of s's KV prefix.
+func prefixBytes(s simulator.Scenario) int64 {
+	return int64(float64(s.Request.PrefixTokens) * s.KVBytesPerToken)
 }
