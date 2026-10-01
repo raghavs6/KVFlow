@@ -75,6 +75,15 @@ func scenarios(n int) []simulator.Scenario {
 	})
 }
 
+// actions returns the action taken for each result.
+func actions(results []Result) []scheduler.Action {
+	out := make([]scheduler.Action, len(results))
+	for i, r := range results {
+		out[i] = r.Action
+	}
+	return out
+}
+
 // A learner that believes the network is fast transfers every time, over one
 // reused connection, and learns from what the worker measured.
 func TestRunLearnsFromRealTransfers(t *testing.T) {
@@ -85,13 +94,13 @@ func TestRunLearnsFromRealTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	want := slices.Repeat([]scheduler.Action{scheduler.ActionTransfer}, 5)
-	if !slices.Equal(actions, want) {
-		t.Errorf("actions = %v, want %v", actions, want)
+	if got := actions(results); !slices.Equal(got, want) {
+		t.Errorf("actions = %v, want %v", got, want)
 	}
 	if got := recv.accepted.Load(); got != 1 {
 		t.Errorf("receiver accepted %d connections, want 1", got)
@@ -112,13 +121,18 @@ func TestRunNeverLearnsWithoutTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	want := slices.Repeat([]scheduler.Action{scheduler.ActionRecompute}, 5)
-	if !slices.Equal(actions, want) {
-		t.Errorf("actions = %v, want %v", actions, want)
+	if got := actions(results); !slices.Equal(got, want) {
+		t.Errorf("actions = %v, want %v", got, want)
+	}
+	for i, r := range results {
+		if r.Seconds != 0 {
+			t.Errorf("results[%d].Seconds = %v, want 0 without a transfer", i, r.Seconds)
+		}
 	}
 	if got := recv.accepted.Load(); got != 0 {
 		t.Errorf("receiver accepted %d connections, want 0", got)
@@ -140,10 +154,11 @@ func TestProbingCorrectsSlowBelief(t *testing.T) {
 	// Alpha 0.5 halves a 1000x-too-slow belief once per probe, so it takes
 	// about 11 probes, one every 3 requests, before transfer wins on its own.
 	const n = 60
-	actions, err := Run(context.Background(), client, recv.Addr().String(), l, 2, scenarios(n))
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, scenarios(n))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	actions := actions(results)
 	first := slices.Index(actions, scheduler.ActionTransfer)
 	if first != 2 {
 		t.Errorf("first transfer at request %d, want 2 (the first probe)", first)
@@ -155,7 +170,25 @@ func TestProbingCorrectsSlowBelief(t *testing.T) {
 	if got := recv.accepted.Load(); got != 1 {
 		t.Errorf("receiver accepted %d connections, want 1", got)
 	}
-	t.Logf("actions = %v", actions)
+	probes := 0
+	for i, r := range results {
+		if r.Believed != r.Action {
+			probes++
+			if r.Believed != scheduler.ActionRecompute || r.Action != scheduler.ActionTransfer {
+				t.Errorf("results[%d] believed %s but took %s, want only recompute forced to transfer", i, r.Believed, r.Action)
+			}
+		}
+		if r.Action == scheduler.ActionTransfer && (r.PredictedSeconds <= 0 || r.Seconds <= 0) {
+			t.Errorf("results[%d] = %+v, want positive predicted and measured seconds", i, r)
+		}
+	}
+	// After 10 probes the belief sits almost exactly on the tipping point,
+	// so the real link's speed decides whether one more is needed.
+	if probes < 10 || probes > 12 {
+		t.Errorf("%d probes, want about 11", probes)
+	}
+	t.Logf("first probe: %+v", results[first])
+	t.Logf("last: %+v", results[n-1])
 	t.Logf("learned %.2f GB/s", 1/l.SecondsPerByte()/1e9)
 }
 

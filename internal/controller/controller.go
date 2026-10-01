@@ -15,14 +15,27 @@ import (
 
 var errInvalidProbe = errors.New("probeEvery must not be negative")
 
+// Result is what happened to one request.
+type Result struct {
+	// Believed is the action the learner predicted was fastest; Action is
+	// the one taken, which differs only when a probe forced a transfer.
+	Believed, Action scheduler.Action
+	// PredictedSeconds is how long the learner expected the prefix's
+	// transfer to take, whether or not it ran.
+	PredictedSeconds float64
+	// Seconds is how long the transfer took as the worker measured it, or 0
+	// if there was no transfer.
+	Seconds float64
+}
+
 // Run decides each scenario with l's current belief. When transfer wins, it
 // asks the worker behind client to send the prefix's bytes to peerAddr and
 // teaches l the time the worker measured. Each scenario's bandwidth and
 // startup are ignored: the real network is the truth. After probeEvery
 // requests without a transfer, the next request transfers whatever l
 // believes, so a wrong belief that the network is slow still gets measured;
-// 0 disables probing. It returns the action taken for each scenario, and
-// stops at the first error.
+// 0 disables probing. It returns a result for each scenario, and stops at
+// the first error.
 func Run(
 	ctx context.Context,
 	client workerpb.WorkerClient,
@@ -30,13 +43,13 @@ func Run(
 	l simulator.Learner,
 	probeEvery int,
 	scenarios []simulator.Scenario,
-) ([]scheduler.Action, error) {
+) ([]Result, error) {
 	if probeEvery < 0 {
 		return nil, errInvalidProbe
 	}
 
 	sinceTransfer := 0
-	actions := make([]scheduler.Action, len(scenarios))
+	results := make([]Result, len(scenarios))
 	for i, s := range scenarios {
 		candidates, err := costmodel.Estimate(costmodel.Inputs{
 			QueueA:               s.Source.Queue,
@@ -60,10 +73,14 @@ func Run(
 		if probeEvery > 0 && sinceTransfer >= probeEvery {
 			action = scheduler.ActionTransfer
 		}
-		actions[i] = action
+		bytes := int64(float64(s.Request.PrefixTokens) * s.KVBytesPerToken)
+		results[i] = Result{
+			Believed:         choice.Action,
+			Action:           action,
+			PredictedSeconds: l.Startup().Seconds() + float64(bytes)*l.SecondsPerByte(),
+		}
 
 		sinceTransfer++
-		bytes := int64(float64(s.Request.PrefixTokens) * s.KVBytesPerToken)
 		if action != scheduler.ActionTransfer || bytes <= 0 {
 			continue
 		}
@@ -72,7 +89,8 @@ func Run(
 		if err != nil {
 			return nil, err
 		}
+		results[i].Seconds = reply.GetSeconds()
 		l.Observe(float64(bytes), reply.GetSeconds())
 	}
-	return actions, nil
+	return results, nil
 }
