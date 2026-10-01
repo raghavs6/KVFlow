@@ -85,7 +85,7 @@ func TestRunLearnsFromRealTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions, err := Run(context.Background(), client, recv.Addr().String(), l, scenarios(5))
+	actions, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRunNeverLearnsWithoutTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions, err := Run(context.Background(), client, recv.Addr().String(), l, scenarios(5))
+	actions, err := Run(context.Background(), client, recv.Addr().String(), l, 0, scenarios(5))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -125,5 +125,46 @@ func TestRunNeverLearnsWithoutTransfers(t *testing.T) {
 	}
 	if got := l.SecondsPerByte(); got != initial {
 		t.Errorf("SecondsPerByte() = %v, want unchanged %v", got, initial)
+	}
+}
+
+// Probing forces a transfer every few requests, so a learner that wrongly
+// believes the network is slow measures it and switches to transferring.
+func TestProbingCorrectsSlowBelief(t *testing.T) {
+	client, recv := startCluster(t)
+	l, err := learner.NewEWMA(0.5, 1e-3) // 1 KB/s
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Alpha 0.5 halves a 1000x-too-slow belief once per probe, so it takes
+	// about 11 probes, one every 3 requests, before transfer wins on its own.
+	const n = 60
+	actions, err := Run(context.Background(), client, recv.Addr().String(), l, 2, scenarios(n))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	first := slices.Index(actions, scheduler.ActionTransfer)
+	if first != 2 {
+		t.Errorf("first transfer at request %d, want 2 (the first probe)", first)
+	}
+	tail := slices.Repeat([]scheduler.Action{scheduler.ActionTransfer}, 10)
+	if !slices.Equal(actions[n-10:], tail) {
+		t.Errorf("last 10 actions = %v, want all transfers", actions[n-10:])
+	}
+	if got := recv.accepted.Load(); got != 1 {
+		t.Errorf("receiver accepted %d connections, want 1", got)
+	}
+	t.Logf("actions = %v", actions)
+	t.Logf("learned %.2f GB/s", 1/l.SecondsPerByte()/1e9)
+}
+
+func TestRunRejectsNegativeProbe(t *testing.T) {
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), nil, "", l, -1, scenarios(1)); err == nil {
+		t.Error("Run(probeEvery = -1) error = nil, want an error")
 	}
 }

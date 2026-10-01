@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 
 	"github.com/raghavs6/KVFlow/internal/costmodel"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
@@ -12,18 +13,29 @@ import (
 	"github.com/raghavs6/KVFlow/internal/workerpb"
 )
 
+var errInvalidProbe = errors.New("probeEvery must not be negative")
+
 // Run decides each scenario with l's current belief. When transfer wins, it
 // asks the worker behind client to send the prefix's bytes to peerAddr and
 // teaches l the time the worker measured. Each scenario's bandwidth and
-// startup are ignored: the real network is the truth. It returns the action
-// taken for each scenario, and stops at the first error.
+// startup are ignored: the real network is the truth. After probeEvery
+// requests without a transfer, the next request transfers whatever l
+// believes, so a wrong belief that the network is slow still gets measured;
+// 0 disables probing. It returns the action taken for each scenario, and
+// stops at the first error.
 func Run(
 	ctx context.Context,
 	client workerpb.WorkerClient,
 	peerAddr string,
 	l simulator.Learner,
+	probeEvery int,
 	scenarios []simulator.Scenario,
 ) ([]scheduler.Action, error) {
+	if probeEvery < 0 {
+		return nil, errInvalidProbe
+	}
+
+	sinceTransfer := 0
 	actions := make([]scheduler.Action, len(scenarios))
 	for i, s := range scenarios {
 		candidates, err := costmodel.Estimate(costmodel.Inputs{
@@ -44,12 +56,18 @@ func Run(
 		if err != nil {
 			return nil, err
 		}
-		actions[i] = choice.Action
+		action := choice.Action
+		if probeEvery > 0 && sinceTransfer >= probeEvery {
+			action = scheduler.ActionTransfer
+		}
+		actions[i] = action
 
+		sinceTransfer++
 		bytes := int64(float64(s.Request.PrefixTokens) * s.KVBytesPerToken)
-		if choice.Action != scheduler.ActionTransfer || bytes <= 0 {
+		if action != scheduler.ActionTransfer || bytes <= 0 {
 			continue
 		}
+		sinceTransfer = 0
 		reply, err := client.Transfer(ctx, &workerpb.TransferRequest{PeerAddr: peerAddr, Bytes: bytes})
 		if err != nil {
 			return nil, err
