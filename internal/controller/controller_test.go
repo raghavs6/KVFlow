@@ -342,3 +342,71 @@ func TestStuckTransferTimesOut(t *testing.T) {
 	}
 	t.Logf("took %v; started at %v and %v; failure: %v", elapsed, results[0].At, results[1].At, results[0].Err)
 }
+
+func TestRunRejectsNegativeInterval(t *testing.T) {
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), nil, l, scenarios(1), Config{Timeout: time.Second, Interval: -1}); err == nil {
+		t.Error("Run(Interval = -1) error = nil, want an error")
+	}
+}
+
+// Requests start on a fixed schedule, one every Interval, however long each
+// transfer takes.
+func TestIntervalPacesRequests(t *testing.T) {
+	client, recv := startCluster(t)
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 64 MiB takes ~20 ms on localhost, so pacing that waited Interval after
+	// each request, instead of keeping a schedule, would fall behind it.
+	slow := scenarios(5)
+	for i := range slow {
+		slow[i].Request.PrefixTokens = 64 << 10
+	}
+	const interval = 50 * time.Millisecond
+	results, err := Run(context.Background(), client, l, slow, Config{
+		PeerAddr: recv.Addr().String(),
+		Timeout:  time.Second,
+		Interval: interval,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for i, r := range results {
+		slot := time.Duration(i) * interval
+		if r.At < slot || r.At > slot+30*time.Millisecond {
+			t.Errorf("results[%d].At = %v, want in [%v, %v]", i, r.At, slot, slot+30*time.Millisecond)
+		}
+		t.Logf("request %d started at %v, transfer took %.1f ms", i, r.At, r.Seconds*1e3)
+	}
+}
+
+// Canceling ctx ends a run that is waiting for its next request's slot.
+func TestCancelStopsPacingWait(t *testing.T) {
+	client, recv := startCluster(t)
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	start := time.Now()
+	_, err = Run(ctx, client, l, scenarios(2), Config{
+		PeerAddr: recv.Addr().String(),
+		Timeout:  time.Second,
+		Interval: 10 * time.Second,
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Error("Run() error = nil, want the cancellation")
+	}
+	if elapsed > time.Second {
+		t.Errorf("Run() returned %v after start, want under 1s", elapsed)
+	}
+	t.Logf("returned after %v: %v", elapsed, err)
+}

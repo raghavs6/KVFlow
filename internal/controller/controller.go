@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	errInvalidProbe   = errors.New("probeEvery must not be negative")
-	errInvalidTimeout = errors.New("timeout must be positive")
+	errInvalidProbe    = errors.New("probeEvery must not be negative")
+	errInvalidTimeout  = errors.New("timeout must be positive")
+	errInvalidInterval = errors.New("interval must not be negative")
 )
 
 // Result is what happened to one request.
@@ -47,6 +48,12 @@ type Config struct {
 	ProbeEvery int
 	// Timeout is how long each transfer may take before it fails.
 	Timeout time.Duration
+	// Interval spaces requests out: request i starts no earlier than
+	// i*Interval after the run starts. Simulated actions take no real time,
+	// so without it a run ends before an outside change can be made. A
+	// request that starts late doesn't move the later ones; they start
+	// right away until the run is back on schedule. 0 disables pacing.
+	Interval time.Duration
 }
 
 // Run decides each scenario with l's current belief. When transfer wins, it
@@ -73,11 +80,17 @@ func Run(
 	if cfg.Timeout <= 0 {
 		return nil, errInvalidTimeout
 	}
+	if cfg.Interval < 0 {
+		return nil, errInvalidInterval
+	}
 
 	sinceTransfer := 0
 	results := make([]Result, len(scenarios))
 	start := time.Now()
 	for i, s := range scenarios {
+		if err := waitUntil(ctx, start.Add(time.Duration(i)*cfg.Interval)); err != nil {
+			return nil, err
+		}
 		at := time.Since(start)
 		candidates, err := costmodel.Estimate(costmodel.Inputs{
 			QueueA:               s.Source.Queue,
@@ -130,6 +143,19 @@ func Run(
 		l.Observe(float64(bytes), reply.GetSeconds())
 	}
 	return results, nil
+}
+
+// waitUntil returns at t, or right away if t has passed, or with ctx's
+// error if ctx ends first.
+func waitUntil(ctx context.Context, t time.Time) error {
+	timer := time.NewTimer(time.Until(t))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // prefixBytes is the size of s's KV prefix.
