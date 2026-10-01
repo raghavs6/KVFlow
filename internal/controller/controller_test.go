@@ -310,7 +310,9 @@ func TestRunRejectsNonPositiveTimeout(t *testing.T) {
 }
 
 // A transfer to a peer that stopped reading fails at the timeout and is
-// recorded, and the run goes on to the next request.
+// recorded, and the run goes on: the next request takes the best other
+// action while the path is down, and the probe after it gets through the worker's lock and times
+// out too, so the first stuck send really was stopped.
 func TestStuckTransferTimesOut(t *testing.T) {
 	peer := startStuckPeer(t)
 	client := startWorker(t, peer)
@@ -320,21 +322,27 @@ func TestStuckTransferTimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 1 GiB is far more than the TCP buffers hold.
-	big := scenarios(2)
+	big := scenarios(3)
 	for i := range big {
 		big[i].Request.PrefixTokens = 1 << 20
 	}
 
 	const timeout = 200 * time.Millisecond
 	start := time.Now()
-	results, err := Run(context.Background(), client, l, big, Config{PeerAddr: peer, Timeout: timeout})
+	results, err := Run(context.Background(), client, l, big, Config{PeerAddr: peer, ProbeEvery: 1, Timeout: timeout})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want timeouts recorded per request", err)
 	}
-	for i, r := range results {
-		if status.Code(r.Err) != codes.DeadlineExceeded {
-			t.Errorf("results[%d].Err = %v, want DeadlineExceeded", i, r.Err)
+	// Recomputing a 1 GiB prefix takes ~1049 s, so the 10 s wait is the best
+	// action left while the path is down.
+	want := []scheduler.Action{scheduler.ActionTransfer, scheduler.ActionWait, scheduler.ActionTransfer}
+	if got := actions(results); !slices.Equal(got, want) {
+		t.Errorf("actions = %v, want %v", got, want)
+	}
+	for _, i := range []int{0, 2} {
+		if status.Code(results[i].Err) != codes.DeadlineExceeded {
+			t.Errorf("results[%d].Err = %v, want DeadlineExceeded", i, results[i].Err)
 		}
 	}
 	if elapsed > 5*timeout {
@@ -466,5 +474,77 @@ func TestMisconfiguredTransferStops(t *testing.T) {
 		if len(results) != 0 {
 			t.Errorf("peer %q: Run() returned %d results, want 0", tc.peer, len(results))
 		}
+	}
+}
+
+// When the learner believes transfer is fastest, a dead worker still gets
+// only one attempt per probe: after a failure the path is down, and requests
+// recompute until the next probe tries it again.
+func TestDownPathWaitsForProbe(t *testing.T) {
+	client, recv := startCluster(t)
+	recv.Close()
+	l, err := learner.NewEWMA(0.5, 1e-9) // 1 GB/s: transfer wins
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Run(context.Background(), client, l, scenarios(9), Config{PeerAddr: recv.Addr().String(), ProbeEvery: 2, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := []scheduler.Action{
+		scheduler.ActionTransfer, scheduler.ActionRecompute, scheduler.ActionRecompute,
+		scheduler.ActionTransfer, scheduler.ActionRecompute, scheduler.ActionRecompute,
+		scheduler.ActionTransfer, scheduler.ActionRecompute, scheduler.ActionRecompute,
+	}
+	if got := actions(results); !slices.Equal(got, want) {
+		t.Errorf("actions = %v, want %v", got, want)
+	}
+	for i, r := range results {
+		if r.Believed != scheduler.ActionTransfer {
+			t.Errorf("results[%d].Believed = %s, want transfer: failures teach the learner nothing", i, r.Believed)
+		}
+	}
+}
+
+// flakyClient fails its first fails Transfer calls with Unavailable, then
+// reports every transfer as taking seconds.
+type flakyClient struct {
+	workerpb.WorkerClient
+	fails   int
+	seconds float64
+}
+
+func (c *flakyClient) Transfer(context.Context, *workerpb.TransferRequest, ...grpc.CallOption) (*workerpb.TransferReply, error) {
+	if c.fails > 0 {
+		c.fails--
+		return nil, status.Error(codes.Unavailable, "worker restarting")
+	}
+	return &workerpb.TransferReply{Seconds: c.seconds}, nil
+}
+
+// A successful probe brings a down path back, and the learner's choice
+// counts again. A fake client makes "fails once, then works" exact.
+func TestSuccessfulProbeBringsPathBack(t *testing.T) {
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &flakyClient{fails: 1, seconds: 0.001}
+
+	results, err := Run(context.Background(), client, l, scenarios(6), Config{PeerAddr: "peer", ProbeEvery: 2, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := []scheduler.Action{
+		scheduler.ActionTransfer,  // fails: path down
+		scheduler.ActionRecompute, // down
+		scheduler.ActionRecompute, // down
+		scheduler.ActionTransfer,  // probe succeeds: path up
+		scheduler.ActionTransfer,  // learner's choice again
+		scheduler.ActionTransfer,
+	}
+	if got := actions(results); !slices.Equal(got, want) {
+		t.Errorf("actions = %v, want %v", got, want)
 	}
 }

@@ -29,7 +29,8 @@ type Result struct {
 	// so results can be lined up with outside changes such as a slowed link.
 	At time.Duration
 	// Believed is the action the learner predicted was fastest; Action is
-	// the one taken, which differs only when a probe forced a transfer.
+	// the one taken. They differ when a probe forced a transfer, or when the
+	// learner chose transfer but the path was down after a failure.
 	Believed, Action scheduler.Action
 	// PredictedSeconds is how long the learner expected the prefix's
 	// transfer to take, whether or not it ran.
@@ -65,9 +66,10 @@ type Config struct {
 // startup are ignored: the real network is the truth. After cfg.ProbeEvery
 // requests without a transfer, the next request transfers whatever l
 // believes, so a wrong belief that the network is slow still gets measured.
-// A failed transfer is recorded in its result and the run goes on; a failed
-// attempt still counts as the probe, so a dead worker is tried at most once
-// every ProbeEvery+1 requests. Each transfer gets cfg.Timeout to finish, so
+// A failed transfer is recorded in its result and the run goes on, but the
+// path counts as down: requests take the best other action, whatever l
+// believes, until the next probe succeeds. So a dead worker is tried at most
+// once every ProbeEvery+1 requests; with probing off, it is never retried. Each transfer gets cfg.Timeout to finish, so
 // a stuck one fails instead of hanging the run. It returns a result for each
 // scenario. It stops early when cfg is invalid, when ctx ends, or when the
 // worker rejects a transfer as misconfigured (InvalidArgument or
@@ -93,6 +95,7 @@ func Run(
 	}
 
 	sinceTransfer := 0
+	down := false
 	results := make([]Result, len(scenarios))
 	start := time.Now()
 	for i, s := range scenarios {
@@ -119,8 +122,14 @@ func Run(
 			return nil, err
 		}
 		action := choice.Action
-		if cfg.ProbeEvery > 0 && sinceTransfer >= cfg.ProbeEvery {
+		switch {
+		case cfg.ProbeEvery > 0 && sinceTransfer >= cfg.ProbeEvery:
 			action = scheduler.ActionTransfer
+		case down && action == scheduler.ActionTransfer:
+			action, err = bestWithoutTransfer(candidates)
+			if err != nil {
+				return nil, err
+			}
 		}
 		bytes := prefixBytes(s)
 		results[i] = Result{
@@ -149,12 +158,27 @@ func Run(
 				return results[:i], err
 			}
 			results[i].Err = err
+			down = true
 			continue
 		}
+		down = false
 		results[i].Seconds = reply.GetSeconds()
 		l.Observe(float64(bytes), reply.GetSeconds())
 	}
 	return results, nil
+}
+
+// bestWithoutTransfer returns the fastest predicted action other than
+// transfer.
+func bestWithoutTransfer(candidates []scheduler.Candidate) (scheduler.Action, error) {
+	var others []scheduler.Candidate
+	for _, c := range candidates {
+		if c.Action != scheduler.ActionTransfer {
+			others = append(others, c)
+		}
+	}
+	choice, err := scheduler.ChooseLowestTTFT(others)
+	return choice.Action, err
 }
 
 // waitUntil returns at t, or right away if t has passed, or with ctx's
