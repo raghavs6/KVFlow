@@ -280,8 +280,12 @@ func TestCanceledRunStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := Run(ctx, client, l, scenarios(3), Config{PeerAddr: recv.Addr().String(), Timeout: time.Second}); err == nil {
+	results, err := Run(ctx, client, l, scenarios(3), Config{PeerAddr: recv.Addr().String(), Timeout: time.Second})
+	if err == nil {
 		t.Error("Run() error = nil, want the cancellation")
+	}
+	if len(results) != 0 {
+		t.Errorf("Run() returned %d results, want 0: nothing finished", len(results))
 	}
 }
 
@@ -385,7 +389,8 @@ func TestIntervalPacesRequests(t *testing.T) {
 	}
 }
 
-// Canceling ctx ends a run that is waiting for its next request's slot.
+// Canceling ctx ends a run that is waiting for its next request's slot, and
+// returns the requests that had finished.
 func TestCancelStopsPacingWait(t *testing.T) {
 	client, recv := startCluster(t)
 	l, err := learner.NewEWMA(0.5, 1e-9)
@@ -396,7 +401,7 @@ func TestCancelStopsPacingWait(t *testing.T) {
 	time.AfterFunc(100*time.Millisecond, cancel)
 
 	start := time.Now()
-	_, err = Run(ctx, client, l, scenarios(2), Config{
+	results, err := Run(ctx, client, l, scenarios(2), Config{
 		PeerAddr: recv.Addr().String(),
 		Timeout:  time.Second,
 		Interval: 10 * time.Second,
@@ -408,5 +413,33 @@ func TestCancelStopsPacingWait(t *testing.T) {
 	if elapsed > time.Second {
 		t.Errorf("Run() returned %v after start, want under 1s", elapsed)
 	}
+	if len(results) != 1 || results[0].Seconds <= 0 {
+		t.Errorf("Run() results = %+v, want request 0's finished transfer only", results)
+	}
 	t.Logf("returned after %v: %v", elapsed, err)
+}
+
+// Canceling ctx during a transfer stops the run, and the cut-off transfer
+// is left out of the results rather than recorded as a failure.
+func TestCancelDuringTransferLeavesItOut(t *testing.T) {
+	peer := startStuckPeer(t)
+	client := startWorker(t, peer)
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := scenarios(2)
+	for i := range big {
+		big[i].Request.PrefixTokens = 1 << 20 // 1 GiB, far more than the TCP buffers hold
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	results, err := Run(ctx, client, l, big, Config{PeerAddr: peer, Timeout: 10 * time.Second})
+	if err == nil {
+		t.Error("Run() error = nil, want the cancellation")
+	}
+	if len(results) != 0 {
+		t.Errorf("Run() results = %+v, want none: the only transfer was cut off", results)
+	}
 }

@@ -66,7 +66,10 @@ type Config struct {
 // attempt still counts as the probe, so a dead worker is tried at most once
 // every ProbeEvery+1 requests. Each transfer gets cfg.Timeout to finish, so
 // a stuck one fails instead of hanging the run. It returns a result for each
-// scenario, and stops early only when ctx ends or cfg is invalid.
+// scenario, and stops early only when ctx ends or cfg is invalid. When ctx
+// ends, it returns the results of the requests that finished along with
+// ctx's error, so a run stopped by hand still has its data; a transfer cut
+// off by ctx is left out, since its time isn't a real measurement.
 func Run(
 	ctx context.Context,
 	client workerpb.WorkerClient,
@@ -89,7 +92,7 @@ func Run(
 	start := time.Now()
 	for i, s := range scenarios {
 		if err := waitUntil(ctx, start.Add(time.Duration(i)*cfg.Interval)); err != nil {
-			return nil, err
+			return results[:i], err
 		}
 		at := time.Since(start)
 		candidates, err := costmodel.Estimate(costmodel.Inputs{
@@ -134,7 +137,7 @@ func Run(
 			// The worker's failure is one request's outcome; ctx ending
 			// means the caller wants the run stopped.
 			if ctx.Err() != nil {
-				return nil, err
+				return results[:i], err
 			}
 			results[i].Err = err
 			continue
