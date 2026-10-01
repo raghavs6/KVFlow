@@ -24,8 +24,11 @@ type Result struct {
 	// transfer to take, whether or not it ran.
 	PredictedSeconds float64
 	// Seconds is how long the transfer took as the worker measured it, or 0
-	// if there was no transfer.
+	// if there was no transfer or it failed.
 	Seconds float64
+	// Err is why the transfer failed. A failed transfer teaches the learner
+	// nothing.
+	Err error
 }
 
 // Run decides each scenario with l's current belief. When transfer wins, it
@@ -34,8 +37,11 @@ type Result struct {
 // startup are ignored: the real network is the truth. After probeEvery
 // requests without a transfer, the next request transfers whatever l
 // believes, so a wrong belief that the network is slow still gets measured;
-// 0 disables probing. It returns a result for each scenario, and stops at
-// the first error.
+// 0 disables probing. A failed transfer is recorded in its result and the
+// run goes on; a failed attempt still counts as the probe, so a dead worker
+// is tried at most once every probeEvery+1 requests. It returns a result
+// for each scenario, and stops early only when ctx ends or the inputs are
+// invalid.
 func Run(
 	ctx context.Context,
 	client workerpb.WorkerClient,
@@ -87,7 +93,13 @@ func Run(
 		sinceTransfer = 0
 		reply, err := client.Transfer(ctx, &workerpb.TransferRequest{PeerAddr: peerAddr, Bytes: bytes})
 		if err != nil {
-			return nil, err
+			// The worker's failure is one request's outcome; ctx ending
+			// means the caller wants the run stopped.
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			results[i].Err = err
+			continue
 		}
 		results[i].Seconds = reply.GetSeconds()
 		l.Observe(float64(bytes), reply.GetSeconds())

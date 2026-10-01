@@ -192,6 +192,57 @@ func TestProbingCorrectsSlowBelief(t *testing.T) {
 	t.Logf("learned %.2f GB/s", 1/l.SecondsPerByte()/1e9)
 }
 
+// When every transfer fails, the run still finishes: each failure is
+// recorded, the learner learns nothing, and failed attempts stay spaced out
+// by the probe counter.
+func TestFailedTransfersAreRecorded(t *testing.T) {
+	client, recv := startCluster(t)
+	recv.Close() // the peer is gone, so the worker can't dial it
+	const initial = 1e-3
+	l, err := learner.NewEWMA(0.5, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, scenarios(9))
+	if err != nil {
+		t.Fatalf("Run() error = %v, want failures recorded per request", err)
+	}
+	want := []scheduler.Action{
+		scheduler.ActionRecompute, scheduler.ActionRecompute, scheduler.ActionTransfer,
+		scheduler.ActionRecompute, scheduler.ActionRecompute, scheduler.ActionTransfer,
+		scheduler.ActionRecompute, scheduler.ActionRecompute, scheduler.ActionTransfer,
+	}
+	if got := actions(results); !slices.Equal(got, want) {
+		t.Errorf("actions = %v, want %v", got, want)
+	}
+	for i, r := range results {
+		failed := r.Action == scheduler.ActionTransfer
+		if (r.Err != nil) != failed || r.Seconds != 0 {
+			t.Errorf("results[%d] = %+v, want Err set only on transfers and Seconds 0", i, r)
+		}
+	}
+	if got := l.SecondsPerByte(); got != initial {
+		t.Errorf("SecondsPerByte() = %v, want unchanged %v", got, initial)
+	}
+	t.Logf("failure: %v", results[2].Err)
+}
+
+// Ending ctx stops the run rather than being recorded as a failure.
+func TestCanceledRunStops(t *testing.T) {
+	client, recv := startCluster(t)
+	l, err := learner.NewEWMA(0.5, 1e-9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := Run(ctx, client, recv.Addr().String(), l, 0, scenarios(3)); err == nil {
+		t.Error("Run() error = nil, want the cancellation")
+	}
+}
+
 func TestRunRejectsNegativeProbe(t *testing.T) {
 	l, err := learner.NewEWMA(0.5, 1e-9)
 	if err != nil {
