@@ -334,3 +334,72 @@ than the 4-6 and ~21 after a drop of the same size. That is the EWMA's
 arithmetic, not the network: error is measured against the new, much
 smaller time, so a 24.6x speed-up starts 2360% off. So alpha 0.5 stays
 the choice, and speed-ups are the case to watch when probes are rare.
+
+## The controller (kvcontrol)
+
+`internal/controller` runs the predict, choose, act, learn loop against a
+real `kvworker`. Only transfers are real. Queues and prefill speeds still
+come from simulated scenarios, because there is no real inference until
+Phase 4; recompute and wait take no real time.
+
+- It is its own loop, not `RunAdaptive` with a pluggable transfer.
+  `RunAdaptive` scores every request against a known truth, and the
+  controller has none: the cost of the actions it didn't take is unknown,
+  so there is no regret, only predicted against measured transfer time.
+- The learner sees only the transfers it chose. `kvreplay` fed it every
+  transfer; here a belief that the network is slow picks recompute and is
+  never corrected. Probing fixes that. A probe sends the request's real
+  bytes, as `RunAdaptive` does, so controller and kvbench results compare.
+  From a 1000x-too-slow belief on localhost, EWMA alpha 0.5 took 11 probes
+  (one halving of the gap each); the line learner took 1, because its
+  first point replaces the initial belief outright.
+- The worker client is gRPC's generated `WorkerClient` interface, with no
+  wrapper. Tests run a real worker and receiver on localhost; only the
+  "fails once, then recovers" test uses a fake, because that is exact.
+- Settings are a `Config` struct. Adding pacing would have made eight
+  positional parameters, three of them bare numbers a call could swap.
+
+## Failed transfers in the controller
+
+A failed transfer is one request's outcome, not the run's. It is recorded
+in the result and not learned from, since its time includes the failure.
+
+- The run stops only when ctx ends or the worker answers InvalidArgument or
+  PermissionDenied. Those mean the run is set up wrong, such as a peer not
+  on the worker's allowlist, and every later transfer would fail the same
+  way. Unavailable and timeouts stay per-request: the network can recover.
+- After a failure the path is down: a request whose learner picks transfer
+  takes the best other action instead, until a probe gets through. Without
+  this, a learner that believed transfer was fastest tried a dead worker
+  on every request, since a failure doesn't change the belief. The best
+  other action isn't always recompute; for a 1 GiB prefix it was wait. With
+  probing off, a down path is never retried.
+- A failed attempt resets the probe counter, so retries stay spaced out.
+- Each transfer gets a fixed timeout. It isn't scaled to the prediction: a
+  badly wrong belief predicts minutes, the case where a deadline matters
+  most.
+- When ctx ends, Run returns the requests that finished. A transfer cut off
+  by the cancel is left out; kept, it read as a 0-second success.
+
+## Pacing and output
+
+Request i starts at `i * Interval` from the start of the run. Because the
+simulated actions take no time, an unpaced run ends in microseconds once
+the controller stops transferring, before a netem change can be made. It
+is a fixed schedule, not a sleep after each request, so transfer time
+doesn't push later requests back; after a slow request the next ones start
+at once until the run is back on schedule. The pacing test uses ~20 ms
+transfers, because with 0.3 ms ones a sleep-after version also passed.
+
+Each result records `At`, when the request started, since that is the
+network state its decision was made under. The CSV uses `encoding/csv`
+because gRPC error text holds commas and quotes, and leaves `actual`
+empty when nothing was measured rather than writing 0.
+
+kvcontrol's scenario is a one-token prefix of `-bytes` that takes
+`-recompute` to rebuild, with an hour-long source queue so wait never wins.
+Transfer then wins exactly above `bytes / recompute` bandwidth, 1.3 GB/s
+by default, which an experiment places between the link's fast and slowed
+rates. It defaults to the line learner at alpha 0.5, starting from
+kvbench's 10 GB/s belief. Ctrl-C exits 0 and writes what finished, since
+that is how a hand-run experiment ends.
