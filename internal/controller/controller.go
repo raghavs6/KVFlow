@@ -21,6 +21,9 @@ var (
 
 // Result is what happened to one request.
 type Result struct {
+	// At is when the request started, measured from the start of the run,
+	// so results can be lined up with outside changes such as a slowed link.
+	At time.Duration
 	// Believed is the action the learner predicted was fastest; Action is
 	// the one taken, which differs only when a probe forced a transfer.
 	Believed, Action scheduler.Action
@@ -66,7 +69,9 @@ func Run(
 
 	sinceTransfer := 0
 	results := make([]Result, len(scenarios))
+	start := time.Now()
 	for i, s := range scenarios {
+		at := time.Since(start)
 		candidates, err := costmodel.Estimate(costmodel.Inputs{
 			QueueA:               s.Source.Queue,
 			QueueB:               s.Destination.Queue,
@@ -91,6 +96,7 @@ func Run(
 		}
 		bytes := prefixBytes(s)
 		results[i] = Result{
+			At:               at,
 			Believed:         choice.Action,
 			Action:           action,
 			PredictedSeconds: l.Startup().Seconds() + float64(bytes)*l.SecondsPerByte(),

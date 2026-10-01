@@ -336,5 +336,9 @@ func TestStuckTransferTimesOut(t *testing.T) {
 	if elapsed > 5*timeout {
 		t.Errorf("Run() took %v for 2 transfers with a %v timeout", elapsed, timeout)
 	}
-	t.Logf("took %v; failure: %v", elapsed, results[0].Err)
+	// The second request starts once the first has waited out its timeout.
+	if gap := results[1].At - results[0].At; gap < timeout || gap > 5*timeout {
+		t.Errorf("second request started %v after the first, want about %v", gap, timeout)
+	}
+	t.Logf("took %v; started at %v and %v; failure: %v", elapsed, results[0].At, results[1].At, results[0].Err)
 }
