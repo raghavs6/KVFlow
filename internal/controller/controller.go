@@ -38,32 +38,39 @@ type Result struct {
 	Err error
 }
 
+// Config holds the settings for a Run.
+type Config struct {
+	// PeerAddr is the data address the worker sends transfers to.
+	PeerAddr string
+	// ProbeEvery is how many requests may pass without a transfer before
+	// the next one is forced to transfer; 0 disables probing.
+	ProbeEvery int
+	// Timeout is how long each transfer may take before it fails.
+	Timeout time.Duration
+}
+
 // Run decides each scenario with l's current belief. When transfer wins, it
-// asks the worker behind client to send the prefix's bytes to peerAddr and
-// teaches l the time the worker measured. Each scenario's bandwidth and
-// startup are ignored: the real network is the truth. After probeEvery
+// asks the worker behind client to send the prefix's bytes to cfg.PeerAddr
+// and teaches l the time the worker measured. Each scenario's bandwidth and
+// startup are ignored: the real network is the truth. After cfg.ProbeEvery
 // requests without a transfer, the next request transfers whatever l
-// believes, so a wrong belief that the network is slow still gets measured;
-// 0 disables probing. A failed transfer is recorded in its result and the
-// run goes on; a failed attempt still counts as the probe, so a dead worker
-// is tried at most once every probeEvery+1 requests. Each transfer gets
-// timeout to finish, so a stuck one fails instead of hanging the run. It
-// returns a result
-// for each scenario, and stops early only when ctx ends or the inputs are
-// invalid.
+// believes, so a wrong belief that the network is slow still gets measured.
+// A failed transfer is recorded in its result and the run goes on; a failed
+// attempt still counts as the probe, so a dead worker is tried at most once
+// every ProbeEvery+1 requests. Each transfer gets cfg.Timeout to finish, so
+// a stuck one fails instead of hanging the run. It returns a result for each
+// scenario, and stops early only when ctx ends or cfg is invalid.
 func Run(
 	ctx context.Context,
 	client workerpb.WorkerClient,
-	peerAddr string,
 	l simulator.Learner,
-	probeEvery int,
-	timeout time.Duration,
 	scenarios []simulator.Scenario,
+	cfg Config,
 ) ([]Result, error) {
-	if probeEvery < 0 {
+	if cfg.ProbeEvery < 0 {
 		return nil, errInvalidProbe
 	}
-	if timeout <= 0 {
+	if cfg.Timeout <= 0 {
 		return nil, errInvalidTimeout
 	}
 
@@ -91,7 +98,7 @@ func Run(
 			return nil, err
 		}
 		action := choice.Action
-		if probeEvery > 0 && sinceTransfer >= probeEvery {
+		if cfg.ProbeEvery > 0 && sinceTransfer >= cfg.ProbeEvery {
 			action = scheduler.ActionTransfer
 		}
 		bytes := prefixBytes(s)
@@ -107,8 +114,8 @@ func Run(
 			continue
 		}
 		sinceTransfer = 0
-		callCtx, cancel := context.WithTimeout(ctx, timeout)
-		reply, err := client.Transfer(callCtx, &workerpb.TransferRequest{PeerAddr: peerAddr, Bytes: bytes})
+		callCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		reply, err := client.Transfer(callCtx, &workerpb.TransferRequest{PeerAddr: cfg.PeerAddr, Bytes: bytes})
 		cancel()
 		if err != nil {
 			// The worker's failure is one request's outcome; ctx ending

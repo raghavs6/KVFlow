@@ -136,7 +136,7 @@ func TestRunLearnsFromRealTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, time.Second, scenarios(5))
+	results, err := Run(context.Background(), client, l, scenarios(5), Config{PeerAddr: recv.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -163,7 +163,7 @@ func TestRunNeverLearnsWithoutTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 0, time.Second, scenarios(5))
+	results, err := Run(context.Background(), client, l, scenarios(5), Config{PeerAddr: recv.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -196,7 +196,7 @@ func TestProbingCorrectsSlowBelief(t *testing.T) {
 	// Alpha 0.5 halves a 1000x-too-slow belief once per probe, so it takes
 	// about 11 probes, one every 3 requests, before transfer wins on its own.
 	const n = 60
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, time.Second, scenarios(n))
+	results, err := Run(context.Background(), client, l, scenarios(n), Config{PeerAddr: recv.Addr().String(), ProbeEvery: 2, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -246,7 +246,7 @@ func TestFailedTransfersAreRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := Run(context.Background(), client, recv.Addr().String(), l, 2, time.Second, scenarios(9))
+	results, err := Run(context.Background(), client, l, scenarios(9), Config{PeerAddr: recv.Addr().String(), ProbeEvery: 2, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("Run() error = %v, want failures recorded per request", err)
 	}
@@ -280,7 +280,7 @@ func TestCanceledRunStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := Run(ctx, client, recv.Addr().String(), l, 0, time.Second, scenarios(3)); err == nil {
+	if _, err := Run(ctx, client, l, scenarios(3), Config{PeerAddr: recv.Addr().String(), Timeout: time.Second}); err == nil {
 		t.Error("Run() error = nil, want the cancellation")
 	}
 }
@@ -290,7 +290,7 @@ func TestRunRejectsNegativeProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), nil, "", l, -1, time.Second, scenarios(1)); err == nil {
+	if _, err := Run(context.Background(), nil, l, scenarios(1), Config{ProbeEvery: -1, Timeout: time.Second}); err == nil {
 		t.Error("Run(probeEvery = -1) error = nil, want an error")
 	}
 }
@@ -300,7 +300,7 @@ func TestRunRejectsNonPositiveTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), nil, "", l, 0, 0, scenarios(1)); err == nil {
+	if _, err := Run(context.Background(), nil, l, scenarios(1), Config{}); err == nil {
 		t.Error("Run(timeout = 0) error = nil, want an error")
 	}
 }
@@ -323,7 +323,7 @@ func TestStuckTransferTimesOut(t *testing.T) {
 
 	const timeout = 200 * time.Millisecond
 	start := time.Now()
-	results, err := Run(context.Background(), client, peer, l, 0, timeout, big)
+	results, err := Run(context.Background(), client, l, big, Config{PeerAddr: peer, Timeout: timeout})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want timeouts recorded per request", err)
