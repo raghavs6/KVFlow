@@ -120,6 +120,7 @@ See section 5 for *how* to explain. This section is about *when*.
 ## 11. Where things live
 
 - `PROJECT.md` — the brief: problem, architecture, data model, milestones, open questions.
+- `UPDATES.md` — a log, newest first. After each working day or major change, add a 1-2 sentence entry on what we did.
 
 This project uses AI for implementation without outsourcing engineering understanding.
 
