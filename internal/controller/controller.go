@@ -8,6 +8,9 @@ import (
 	"errors"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/raghavs6/KVFlow/internal/costmodel"
 	"github.com/raghavs6/KVFlow/internal/scheduler"
 	"github.com/raghavs6/KVFlow/internal/simulator"
@@ -66,10 +69,12 @@ type Config struct {
 // attempt still counts as the probe, so a dead worker is tried at most once
 // every ProbeEvery+1 requests. Each transfer gets cfg.Timeout to finish, so
 // a stuck one fails instead of hanging the run. It returns a result for each
-// scenario, and stops early only when ctx ends or cfg is invalid. When ctx
-// ends, it returns the results of the requests that finished along with
-// ctx's error, so a run stopped by hand still has its data; a transfer cut
-// off by ctx is left out, since its time isn't a real measurement.
+// scenario. It stops early when cfg is invalid, when ctx ends, or when the
+// worker rejects a transfer as misconfigured (InvalidArgument or
+// PermissionDenied), since every later transfer would be rejected too. When
+// it stops early, it returns the results of the requests that finished along
+// with the error, so a run stopped by hand still has its data; the request
+// that stopped it is left out.
 func Run(
 	ctx context.Context,
 	client workerpb.WorkerClient,
@@ -135,8 +140,12 @@ func Run(
 		cancel()
 		if err != nil {
 			// The worker's failure is one request's outcome; ctx ending
-			// means the caller wants the run stopped.
+			// means the caller wants the run stopped, and a rejected request
+			// means the run is set up wrong.
 			if ctx.Err() != nil {
+				return results[:i], err
+			}
+			if c := status.Code(err); c == codes.InvalidArgument || c == codes.PermissionDenied {
 				return results[:i], err
 			}
 			results[i].Err = err

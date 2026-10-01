@@ -443,3 +443,28 @@ func TestCancelDuringTransferLeavesItOut(t *testing.T) {
 		t.Errorf("Run() results = %+v, want none: the only transfer was cut off", results)
 	}
 }
+
+// A transfer the worker rejects as misconfigured stops the run, since every
+// later one would be rejected too.
+func TestMisconfiguredTransferStops(t *testing.T) {
+	for _, tc := range []struct {
+		peer string
+		want codes.Code
+	}{
+		{"127.0.0.1:1", codes.PermissionDenied}, // not in the worker's allowlist
+		{"", codes.InvalidArgument},
+	} {
+		client, _ := startCluster(t)
+		l, err := learner.NewEWMA(0.5, 1e-9)
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := Run(context.Background(), client, l, scenarios(5), Config{PeerAddr: tc.peer, Timeout: time.Second})
+		if status.Code(err) != tc.want {
+			t.Errorf("peer %q: Run() error = %v, want %v", tc.peer, err, tc.want)
+		}
+		if len(results) != 0 {
+			t.Errorf("peer %q: Run() returned %d results, want 0", tc.peer, len(results))
+		}
+	}
+}
