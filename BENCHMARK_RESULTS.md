@@ -422,3 +422,54 @@ transfers at α=0.1 and 5 vs 9 at α=0.5, matching the replay.
   doesn't.
 - Only one break length (717 s) was tried, so how the refill grows with
   idle time is not measured.
+
+## Controller on a steady Docker link (2026-10-01)
+
+**Setup:** Docker on a Mac, image rebuilt from `Dockerfile`. Two `kvworker`
+containers on `kvnet`: `send` takes the controller's commands and sends
+to `recv:9000`; `recv` only receives, and has `NET_ADMIN` so the slowdown
+run can add netem to the same containers. `kvcontrol` runs on the Mac with
+its defaults: line learner α=0.5, probe every 10, a request every 100 ms
+for 3 minutes, 64 MiB prefix, 50 ms recompute. No netem. Data:
+`results/docker-controller-steady/run1.csv`.
+
+**Expected:** every request transfers (~6-7 ms at the ~10 GB/s kvxfer
+measured, against 50 ms recompute), no errors, median prediction miss
+under ~20%.
+
+**Result:**
+
+| | value |
+|---|---|
+| requests, errors | 1800, 0 |
+| believed and took transfer | 1800 of 1800 |
+| transfer time | min 4.7, median 15.3, p90 17.4, p99 23.0, max 43.2 ms |
+| prediction miss, \|actual − predicted\| / actual | median 7.0%, p90 28.0%, max 300% |
+| most behind schedule | 2.3 ms |
+
+Transfer time didn't drift: the median of each block of 200 requests was
+14.7-15.7 ms. The first transfer (16.7 ms) replaced the 10 GB/s starting
+belief (6.7 ms predicted), and row 2 was predicted within 6%.
+
+**Transfers were 2-3x slower than expected, and the gap between requests
+is why.** The same containers and connection, sent back to back
+(`-interval 1ms`, 300 requests, `backtoback.csv`), took a median 4.6 ms
+with a 0.9% median miss. What in the 100 ms pause slows the next
+transfer is not known. `tcp_slow_start_after_idle` is on in the
+container, but it applies after an idle longer than the retransmit timer
+(at least 200 ms on Linux), and the connection idles ~85 ms, so it
+probably isn't it. That wasn't tested.
+
+**What it means:**
+
+- **No false switches.** Steady transfers ran ~4.4 GB/s, above the
+  1.3 GB/s switch point, and in 1800 requests no noise flipped a decision.
+  The worst transfer (43 ms) was still below recompute's 50 ms.
+- **The margin is ~3x, not ~7x.** 15 ms against 50 ms. With α=0.5, it
+  would take a transfer above ~85 ms to flip a single decision.
+- **The slowdown run still has room.** 1.3 GB/s sits between this link's
+  ~4.4 GB/s and the ~0.33 GB/s measured under `netem delay 10ms`.
+- **This is the noise floor for the slowdown run:** a ~7% median miss,
+  with 1 in 10 off by more than 28%, while nothing is changing.
+- Spaced requests are the realistic case, so the slowdown run keeps the
+  100 ms interval rather than measuring the faster back-to-back link.
