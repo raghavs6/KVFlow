@@ -403,3 +403,28 @@ by default, which an experiment places between the link's fast and slowed
 rates. It defaults to the line learner at alpha 0.5, starting from
 kvbench's 10 GB/s belief. Ctrl-C exits 0 and writes what finished, since
 that is how a hand-run experiment ends.
+
+## Replaying published loaders (kvloadsim)
+
+The question is whether CacheGen- and Cake-style loaders survive a real
+cloud link. Both were evaluated only on fixed or randomly drawn
+bandwidth.
+
+- **The link is replayed, not re-run.** A kvxfer run sent back to back
+  becomes bandwidth over time (`nettrace`): each row runs at its own
+  average rate for its duration. Every loader then meets the same link at
+  the same moments, which a live run can't give. The cost is no feedback:
+  a simulated load doesn't spend the burst allowance.
+- **Recompute is a constant per chunk,** since there is no GPU. It is a
+  flag, and the break-even bandwidth it implies is printed, so a reader
+  sees where the guess puts the decision.
+- **CacheGen's estimator is a Learner (`LastSample`),** so CacheGen-style
+  chunk-by-chunk choice runs with any learner, with and without probing.
+  A difference then comes from the estimator, not the policy. It observes
+  only loaded chunks; whether real CacheGen learns anything while sending
+  text is not known.
+- **The oracle goes one chunk at a time,** taking the faster option for
+  each. It is the right bar for the chunked loaders. Cake does both at
+  once and can beat it.
+- **Learners and probe counts carry over between requests,** as in a
+  long-running loader. Starting each request fresh would hide being stuck.
