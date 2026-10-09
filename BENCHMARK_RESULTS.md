@@ -473,3 +473,95 @@ probably isn't it. That wasn't tested.
   with 1 in 10 off by more than 28%, while nothing is changing.
 - Spaced requests are the realistic case, so the slowdown run keeps the
   100 ms interval rather than measuring the faster back-to-back link.
+
+## Published KV loaders on the AWS traces (2026-10-09)
+
+**Question:** do loaders that choose between loading and recomputing KV
+cache cope with how a real cloud link behaves? CacheGen (SIGCOMM '24) and
+Cake (ICML '25) were evaluated on fixed or randomly drawn bandwidth, not
+on recorded cloud links.
+
+**Setup:** `kvloadsim` replays the AWS burst run and the recovery run
+(Phase A then Phase C, the 717 s break cut out, as in kvreplay) as
+bandwidth over time. One request starts every second. Each needs 4096
+tokens of Llama 3.1 8B KV cache (128 KiB per token, 512 MiB), in 16
+chunks of 32 MiB. Recompute is **not measured**: 2500 tokens/s is a guess
+for an A10G-class GPU, which puts the break-even at 0.33 GB/s, between
+the link's fast (0.62-1.19 GB/s) and throttled (0.048 GB/s) rates.
+Learners start from kvbench's 10 GB/s belief. Commands:
+
+```sh
+go run ./cmd/kvloadsim < results/aws-c7i-flex-burst/burst.csv
+(cat phaseA.csv; tail -n +2 phaseC.csv) | go run ../../cmd/kvloadsim   # in results/aws-c7i-flex-recovery
+```
+
+Policies:
+
+- **oracle, one at a time:** knows the link and, chunk by chunk, takes
+  the faster option.
+- **last-sample:** CacheGen's estimator, which believes the previous
+  chunk's rate holds.
+- **ewma** and **line:** KVFlow's learners.
+- **probe K:** forces a load after K recomputed chunks in a row.
+- **cake:** loads from the back while recomputing from the front.
+
+**Expected:** if a loader has to learn the link, a throttle that comes
+without warning should cost it something. Cake needs no estimate, so it
+should be hit least.
+
+**Result, recovery trace** (1507 requests; seconds to have the KV cache ready):
+
+| policy | mean | p99 | vs oracle | requests > 2x oracle |
+|---|---|---|---|---|
+| oracle, one at a time | 1.349 | 1.638 | 0 | 0 |
+| always-load | 8.459 | 11.094 | +527% | 1138 |
+| always-recompute | 1.638 | 1.638 | +21.5% | 367 |
+| cake | 1.173 | 1.434 | -13.0% | 0 |
+| last-sample | 1.636 | 1.638 | +21.2% | 363 |
+| ewma / line α=0.5 | 1.383 | 1.638 | +2.5% | 43 |
+| any learner, probe 20 | ~1.69 | 2.229 | +25% | 2-3 |
+| any learner, probe 50 | ~1.49 | 2.229 | +11% | 4-10 |
+| any learner, probe 100 | ~1.43 | 2.229 | +6% | 7-20 |
+
+**Result, burst trace** (one throttle, no recovery; 1262 requests): every
+learner without probing matched the oracle (+0.0%). Probing cost +17.9%
+at K=20 and +3.7% at K=100. Cake was -19.0%.
+
+**What happened:**
+
+- **One hiccup locked last-sample out for the whole fast phase.** At
+  3.6 s, a single 64 MiB transfer took 276 ms instead of 56 ms, a 0.24
+  GB/s blip on a 1.19 GB/s link. The chunk that saw it set last-sample's
+  belief below break-even, so it recomputed everything for the next
+  ~320 s and never measured the link again. EWMA and line averaged the
+  blip away.
+- **After the throttle, every learner without probing stayed stuck,**
+  including through Phase C's fast minute. That costs +2.5% here only
+  because Phase C was fast for just 44 s.
+- **Probing fixes being stuck but is expensive on a throttled link.**
+  A probe is a real 32 MiB chunk, 0.7 s at 0.048 GB/s against 0.1 s to
+  recompute, so probing every 20 chunks put a probe in almost every
+  request. Probing less often cost less on these traces, which spend most
+  of their time throttled.
+- **Cake was never worse than always-recompute on any request** and beat
+  the one-at-a-time oracle by 13-19%. It never estimates, so it can't get
+  stuck.
+
+**What it means:**
+
+- On these traces, a loader that **estimates** the link (CacheGen's
+  design, and KVFlow's) is either stuck or pays for probes. A loader that
+  **races** both sides (Cake) has neither problem.
+- The failure that matters for CacheGen isn't the throttle itself. It's
+  an estimate that never gets corrected: one real blip was enough.
+- **Not checked, and the next things to check:**
+  - Whether real CacheGen re-measures while sending text. Here it doesn't
+    observe recomputed chunks; the paper only says it uses "the
+    throughput of the previous chunk".
+  - Whether GPU instances throttle the same way. AWS lists burst network
+    for g5/g6 up to 4xlarge (e.g. g5.xlarge: 2.5 Gbps baseline, 10 Gbps
+    burst), but this trace is from c7i-flex.
+  - The cost of recompute while loading. Cake's real recompute shares
+    the GPU, and here recompute speed is a constant.
+  - The simulated loads don't spend the burst allowance themselves. The
+    trace was recorded under kvxfer's load.

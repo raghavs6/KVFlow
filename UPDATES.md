@@ -3,6 +3,10 @@
 A short log of what changed, newest first. One entry per working day or
 major change.
 
+## 2026-10-09
+
+Checked the literature: transfer-vs-recompute is already published (CacheGen, Cake), but only on fixed or random bandwidth. Built `kvloadsim` to replay those loaders through the recorded AWS traces. Cake held up; CacheGen's last-chunk estimator got stuck for 320 s on one real hiccup, and probing fixes that but costs a lot on a throttled link.
+
 ## 2026-09-30
 
 Built the controller, which decides each request with the learner's belief, runs real transfers through `kvworker`, and learns from what the worker measured. It probes when it hasn't transferred lately, records failures without stopping, keeps requests on a fixed schedule, and writes a CSV. `kvcontrol` runs it from the command line.
