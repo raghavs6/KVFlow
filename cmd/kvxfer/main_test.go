@@ -42,7 +42,7 @@ func TestRunInterleavesSizes(t *testing.T) {
 			go xfer.ServeAll(counted, t.Logf)
 
 			var out bytes.Buffer
-			if err := run(&out, ln.Addr().String(), reuse, []int64{10, 20}, 2, 0); err != nil {
+			if err := run(&out, ln.Addr().String(), reuse, []int64{10, 20}, 2, 0, 0); err != nil {
 				t.Fatalf("run() error = %v", err)
 			}
 			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -82,7 +82,7 @@ func TestRunDurationFinishesTheRound(t *testing.T) {
 	go xfer.ServeAll(ln, t.Logf)
 
 	var out bytes.Buffer
-	if err := run(&out, ln.Addr().String(), true, []int64{10, 20, 30}, 5, time.Nanosecond); err != nil {
+	if err := run(&out, ln.Addr().String(), true, []int64{10, 20, 30}, 5, time.Nanosecond, 0); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -94,6 +94,33 @@ func TestRunDurationFinishesTheRound(t *testing.T) {
 		fields := strings.Split(line, ",")
 		if got := fields[1] + "," + fields[2]; got != want[i] {
 			t.Errorf("row %d round,bytes = %s, want %s", i, got, want[i])
+		}
+	}
+}
+
+// A gap idles the link before every transfer but the first, outside the
+// timed span: 4 transfers with a 50 ms gap take at least 150 ms in all,
+// while each row stays far below 50 ms.
+func TestRunGapIdlesBetweenTransfers(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+	go xfer.ServeAll(ln, t.Logf)
+
+	var out bytes.Buffer
+	start := time.Now()
+	if err := run(&out, ln.Addr().String(), true, []int64{10, 20}, 2, 0, 50*time.Millisecond); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Errorf("run() took %v, want at least 150ms", elapsed)
+	}
+	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
+		fields := strings.Split(line, ",")
+		if s, _ := strconv.ParseFloat(fields[3], 64); s >= 0.05 {
+			t.Errorf("row %d took %vs, want the gap left out of the timing", i, s)
 		}
 	}
 }
