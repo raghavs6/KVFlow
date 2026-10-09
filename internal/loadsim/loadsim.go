@@ -45,10 +45,11 @@ func (f Fixed) Load(tr *nettrace.Trace, at float64, ld Load) float64 {
 // Oracle knows the network. For each chunk in turn it takes whichever of
 // loading or recomputing finishes first. That is the best choice per chunk;
 // it isn't proven best over the whole load, since an earlier choice moves
-// when later chunks meet the network.
+// when later chunks meet the network. Like Chunked it does one chunk at a
+// time, so Cake, which loads and recomputes at once, can beat it.
 type Oracle struct{}
 
-func (Oracle) Name() string { return "oracle" }
+func (Oracle) Name() string { return "oracle, one at a time" }
 
 func (Oracle) Load(tr *nettrace.Trace, at float64, ld Load) float64 {
 	now := at
